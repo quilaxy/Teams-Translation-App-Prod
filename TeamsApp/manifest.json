@@ -1,14 +1,14 @@
 {
     "$schema": "https://developer.microsoft.com/json-schemas/teams/v1.16/MicrosoftTeams.schema.json",
     "manifestVersion": "1.16",
-    "version": "1.0.4",
-    "id": "8507f0a5-0e21-4269-80f2-a3bf751f1aa3",
+    "version": "1.1.0",
+    "id": "bd147774-40fb-4fcc-b650-369b56634f15",
     "packageName": "com.kddi-ann.live-translation",
     "developer": {
-        "name": "KDDI-ANN",
-        "websiteUrl": "https://kid-translation-caeuevabg5g4d9hm.southeastasia-01.azurewebsites.net",
-        "privacyUrl": "https://kid-translation-caeuevabg5g4d9hm.southeastasia-01.azurewebsites.net/privacy",
-        "termsOfUseUrl": "https://kid-translation-caeuevabg5g4d9hm.southeastasia-01.azurewebsites.net/terms"
+        "name": "KID-ANN",
+        "websiteUrl": "https://kid-teams-translation-gjgba2edg3hnbjfs.southeastasia-01.azurewebsites.net",
+        "privacyUrl": "https://kid-teams-translation-gjgba2edg3hnbjfs.southeastasia-01.azurewebsites.net/privacy",
+        "termsOfUseUrl": "https://kid-teams-translation-gjgba2edg3hnbjfs.southeastasia-01.azurewebsites.net/terms"
     },
     "icons": {
         "color": "color.png",
@@ -27,13 +27,13 @@
         {
             "entityId": "liveTranslationPersonal",
             "name": "KID AI Live Translation",
-            "contentUrl": "https://kid-translation-caeuevabg5g4d9hm.southeastasia-01.azurewebsites.net/translation-tab",
+            "contentUrl": "https://kid-teams-translation-gjgba2edg3hnbjfs.southeastasia-01.azurewebsites.net/translation-tab",
             "scopes": ["personal"]
         }
     ],
     "configurableTabs": [
         {
-            "configurationUrl": "https://kid-translation-caeuevabg5g4d9hm.southeastasia-01.azurewebsites.net/tab-config",
+            "configurationUrl": "https://kid-teams-translation-gjgba2edg3hnbjfs.southeastasia-01.azurewebsites.net/tab-config",
             "canUpdateConfiguration": true,
             "scopes": ["groupChat", "team"],
             "context": ["meetingSidePanel"]
@@ -43,10 +43,10 @@
     "connectors": [],
     "composeExtensions": [],
     "permissions": ["identity", "messageTeamMembers"],
-    "validDomains": ["kid-translation-caeuevabg5g4d9hm.southeastasia-01.azurewebsites.net"],
+    "validDomains": ["kid-teams-translation-gjgba2edg3hnbjfs.southeastasia-01.azurewebsites.net"],
     "webApplicationInfo": {
-        "id": "d778998b-615c-4de0-b99a-b9f0a854a95a",
-        "resource": "api://kid-translation-caeuevabg5g4d9hm.southeastasia-01.azurewebsites.net/d778998b-615c-4de0-b99a-b9f0a854a95a"
+        "id": "6e027021-ed0d-4a1a-8342-46952c7b7043",
+        "resource": "api://kid-teams-translation-gjgba2edg3hnbjfs.southeastasia-01.azurewebsites.net/6e027021-ed0d-4a1a-8342-46952c7b7043"
     },
     "meetingExtensionDefinition": {
         "scenes": [],
