@@ -1,0 +1,1658 @@
+@page "/translation-tab"
+@layout EmptyLayout
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+@using Microsoft.AspNetCore.SignalR.Client
+@using Microsoft.AspNetCore.Components.Web
+@using LiveTranslation.Engine
+@using Teams_Translation_App.Services
+@inject NavigationManager Nav
+@inject MeetingSessionManager Sessions
+@inject IJSRuntime JS
+@implements IAsyncDisposable
+
+<PageTitle>KID AI Live Translation</PageTitle>
+
+<style>
+    /* ── Reset ───────────────────────────────────────────────────── */
+    html, body, #app, .page, article, main {
+        margin: 0 !important;
+        padding: 0 !important;
+        height: 100% !important;
+        overflow: hidden !important;
+        max-width: 100% !important;
+        box-sizing: border-box !important;
+    }
+
+    /* ── Root container ──────────────────────────────────────────── */
+    .tab-root {
+        --header-height: 24px;
+        --header-padding-y: 1px;
+        --font-latest: 14px;
+        --font-mid: 12px;
+        --font-old: 10px;
+        --font-active: 10px;
+        --font-waiting: 11px;
+        --font-popout-current: 14px;
+        --font-popout-prev: 12px;
+        --font-popout-waiting: 12px;
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+        width: 100%;
+        max-width: 100%;
+        padding: 0;
+        box-sizing: border-box;
+        overflow-x: hidden;
+        position: relative;
+        background: #0e0e16;
+        font-family: 'Segoe UI', sans-serif;
+        color: #ffffff;
+    }
+
+    html.teams-light .tab-root { background: #f5f5fa; color: #0e0e2e; }
+    html.teams-contrast .tab-root { background: #000000; color: #ffffff; }
+
+    .tab-root.font-small {
+        --font-latest: 12px;
+        --font-mid: 10px;
+        --font-old: 9px;
+        --font-active: 9px;
+        --font-waiting: 10px;
+        --font-popout-current: 12px;
+        --font-popout-prev: 10px;
+        --font-popout-waiting: 10px;
+    }
+
+    .tab-root.font-medium {
+        --font-latest: 14px;
+        --font-mid: 12px;
+        --font-old: 10px;
+        --font-active: 10px;
+        --font-waiting: 11px;
+        --font-popout-current: 14px;
+        --font-popout-prev: 12px;
+        --font-popout-waiting: 12px;
+    }
+
+    .tab-root.font-large {
+        --font-latest: 16px;
+        --font-mid: 14px;
+        --font-old: 12px;
+        --font-active: 12px;
+        --font-waiting: 13px;
+        --font-popout-current: 16px;
+        --font-popout-prev: 14px;
+        --font-popout-waiting: 14px;
+    }
+
+    /* ── Minimal header ──────────────────────────────────────────── */
+    .header-bar {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-shrink: 0;
+        min-height: var(--header-height);
+        margin: 0;
+        padding: var(--header-padding-y) 0;
+        border-bottom: 1px solid #1e1e2e;
+        background: #0e0e1e;
+    }
+
+    .header-spacer {
+        margin-right: auto;
+        min-width: 0;
+    }
+
+    .status-badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 5px;
+        height: 22px;
+        border-radius: 999px;
+        border: 1px solid;
+        padding: 0 8px;
+        font-size: 11px;
+        line-height: 1;
+        white-space: nowrap;
+        cursor: default;
+    }
+    .status-badge .status-dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: currentColor;
+        flex-shrink: 0;
+    }
+
+    .badge-live { color: #33aa77; background: #0a1a12; border-color: #1a3a22; }
+    .badge-waiting { color: #555577; background: #0e0e1e; border-color: #22223a; }
+    html.teams-light .badge-live { color: #228855; background: #e8f5e8; border-color: #aaddaa; }
+    html.teams-light .badge-waiting { color: #9090b0; background: #ebebf5; border-color: #c0c0da; }
+    html.teams-contrast .status-badge { color: #ffffff; background: #000000; border-color: #ffffff; }
+
+    .icon-btn {
+        width: 22px;
+        height: 22px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        border-radius: 3px;
+        border: 1px solid #2a2a44;
+        background: #22223a;
+        color: #6666aa;
+        cursor: pointer;
+        font-size: 12px;
+        line-height: 1;
+        flex-shrink: 0;
+    }
+    .icon-btn .btn-icon {
+        font-size: 13px;
+        line-height: 1;
+    }
+    .icon-btn:hover:not([disabled]) { background: #2a2a44; color: #8f8fd0; }
+    .icon-btn.active { background: #2a3f88; color: #ccd4ff; border-color: #3a50a8; }
+    .icon-btn[disabled] { opacity: 0.4; cursor: default; }
+    html.teams-light .icon-btn { background: #d0d0e8; color: #606090; border-color: #b8b8d0; }
+    html.teams-light .icon-btn:hover:not([disabled]) { background: #c6c6df; color: #505080; }
+    html.teams-light .icon-btn.active { background: #2a3f88; color: #ccd4ff; border-color: #3a50a8; }
+    html.teams-contrast .icon-btn { background: #000000; color: #ffffff; border-color: #ffffff; }
+    html.teams-contrast .icon-btn.active { background: #ffffff; color: #000000; border-color: #ffffff; }
+
+    html.teams-light .header-bar { border-bottom-color: #c4c4da; background: #eaeaf5; }
+    html.teams-contrast .header-bar { border-bottom-color: #ffffff; background: #000000; }
+
+    .tab-root.popout-mode {
+        padding: 4px 8px;
+    }
+    .tab-root.popout-mode .header-bar {
+        margin: -4px -8px 4px -8px;
+        padding: 3px 8px;
+        min-height: 20px;
+        gap: 4px;
+    }
+    /* Smaller icon buttons in popout */
+    .popout-mode .icon-btn {
+        width: 20px;
+        height: 20px;
+        font-size: 10px;
+        padding: 0;
+    }
+    .popout-mode .icon-btn .btn-icon {
+        font-size: 11px;
+    }
+    /* Smaller badge in popout */
+    .popout-mode .status-badge {
+        font-size: 9px;
+        height: 20px;
+        padding: 0 6px;
+        gap: 4px;
+    }
+    .popout-mode .status-badge .status-dot {
+        width: 5px;
+        height: 5px;
+    }
+
+    /* ── Settings overlay ─────────────────────────────────────────── */
+    .settings-overlay {
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: var(--header-height);
+        bottom: 0;
+        z-index: 10;
+    }
+
+    .settings-panel {
+        position: absolute;
+        top: 4px;
+        right: 6px;
+        width: min(360px, calc(100% - 12px));
+        background: #0f1020;
+        border: 1px solid #2a2a44;
+        border-radius: 4px;
+        padding: 8px;
+        box-sizing: border-box;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+    }
+
+    .s-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-bottom: 6px;
+    }
+
+    .s-lbl {
+        min-width: 42px;
+        font-size: 9px;
+        color: #7777aa;
+        letter-spacing: 0.02em;
+        flex-shrink: 0;
+    }
+
+    .s-sel {
+        flex: 1;
+        min-width: 0;
+        font-size: 10px;
+        padding: 3px 4px;
+        border-radius: 3px;
+        border: 1px solid #22223a;
+        background: #14142a;
+        color: #aaaacc;
+        cursor: pointer;
+        font-family: 'Segoe UI', sans-serif;
+        appearance: auto;
+    }
+    .s-sel:disabled { opacity: 0.35; cursor: default; }
+
+    .detected-badge { font-size: 9px; color: #33aa77; letter-spacing: 0.03em; flex-shrink: 0; white-space: nowrap; }
+    html.teams-light .detected-badge { color: #228855; }
+    html.teams-contrast .detected-badge { color: #ffffff; }
+
+    .s-pill {
+        background: #14142a;
+        color: #666688;
+        border: 1px solid #22223a;
+        border-radius: 10px;
+        padding: 2px 8px;
+        font-size: 10px;
+        font-family: 'Segoe UI', sans-serif;
+        cursor: pointer;
+        line-height: 1.3;
+        white-space: nowrap;
+        flex-shrink: 0;
+    }
+    .s-pill:hover:not([disabled]) { background: #20203a; color: #aaaacc; }
+    .s-pill.active { background: #2a3f88; color: #ccd4ff; border-color: #3a50a8; }
+    .s-pill[disabled] { opacity: 0.35; cursor: default; }
+
+    .s-divider {
+        height: 1px;
+        margin: 4px 0 6px;
+        background: #1e1e2e;
+    }
+
+    .s-action {
+        width: 100%;
+        height: 22px;
+        border-radius: 3px;
+        border: 1px solid #2a2a44;
+        background: #1b1b31;
+        color: #b2b2d6;
+        font-size: 10px;
+        margin-top: 5px;
+        cursor: pointer;
+        font-family: 'Segoe UI', sans-serif;
+    }
+    .s-action[disabled] { opacity: 0.35; cursor: default; }
+    .s-start { background: #0f2a16; color: #7ad68c; border-color: #29543a; }
+    .s-stop { background: #321313; color: #ef8f8f; border-color: #694040; }
+
+    .attr-link {
+        text-align: center;
+        margin-top: 5px;
+        padding-top: 4px;
+        border-top: 1px solid #1a1a2a;
+    }
+    .attr-link a {
+        font-size: 7px;
+        color: #2a2a44;
+        text-decoration: none;
+    }
+    .attr-link a:hover { color: #444466; }
+
+    html.teams-light .settings-panel { background: #f1f1fa; border-color: #c4c4da; box-shadow: 0 8px 24px rgba(33, 33, 77, 0.18); }
+    html.teams-light .s-lbl { color: #7070a0; }
+    html.teams-light .s-sel { background: #e0e0f0; border-color: #c0c0da; color: #404060; }
+    html.teams-light .s-pill { background: #e0e0f0; color: #606090; border-color: #c0c0da; }
+    html.teams-light .s-pill:hover:not([disabled]) { background: #d0d0e8; color: #404070; }
+    html.teams-light .s-pill.active { background: #4a5faa; color: #ffffff; border-color: #3a4f9a; }
+    html.teams-light .s-divider { background: #c4c4da; }
+    html.teams-light .s-action { background: #d9d9ec; color: #545487; border-color: #bfbfda; }
+    html.teams-light .s-start { background: #e8f5e8; color: #228822; border-color: #aaddaa; }
+    html.teams-light .s-stop { background: #fde8e8; color: #aa2222; border-color: #ddaaaa; }
+    html.teams-light .attr-link a { color: #c0c0d8; }
+    html.teams-light .attr-link a:hover { color: #9090b0; }
+
+    html.teams-contrast .settings-panel,
+    html.teams-contrast .s-sel,
+    html.teams-contrast .s-pill,
+    html.teams-contrast .s-action { background: #000000; color: #ffffff; border-color: #ffffff; box-shadow: none; }
+    html.teams-contrast .s-pill.active { background: #ffffff; color: #000000; border-color: #ffffff; }
+    html.teams-contrast .s-lbl { color: #ffffff; }
+    html.teams-contrast .s-divider { background: #ffffff; }
+
+    /* ── Committed area ──────────────────────────────────────────── */
+    .committed-area-wrapper {
+        position: relative;
+        flex: 1;
+        min-height: 0;
+        overflow: hidden;
+    }
+
+    .committed-area {
+        height: 100%;
+        overflow-y: auto;
+        overflow-x: hidden;
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-start;
+        gap: 2px;
+        scrollbar-width: thin;
+        scrollbar-color: #22223a transparent;
+        box-sizing: border-box;
+    }
+    .committed-area::-webkit-scrollbar { width: 3px; }
+    .committed-area::-webkit-scrollbar-thumb { background: #22223a; border-radius: 2px; }
+    .committed-area::-webkit-scrollbar-track { background: transparent; }
+    .committed-area .spacer { flex: 1; }
+
+    /* Multi-tier fade — dark (default) */
+    .line-latest {
+        font-size: var(--font-latest);
+        font-weight: 700;
+        color: #ffffff;
+        margin: 0;
+        line-height: 1.5;
+        word-wrap: break-word;
+        overflow-wrap: break-word;
+    }
+
+    .line-mid {
+        font-size: var(--font-mid);
+        font-weight: 400;
+        color: #8888aa;
+        margin: 0;
+        line-height: 1.4;
+        word-wrap: break-word;
+        overflow-wrap: break-word;
+    }
+
+    .line-old {
+        font-size: var(--font-old);
+        font-weight: 400;
+        color: #3a3a5a;
+        margin: 0;
+        line-height: 1.4;
+        word-wrap: break-word;
+        overflow-wrap: break-word;
+    }
+
+    /* Multi-tier fade — light */
+    html.teams-light .line-latest { color: #0e0e2e; }
+    html.teams-light .line-mid { color: #606090; }
+    html.teams-light .line-old { color: #aaaacc; }
+
+    /* Multi-tier fade — high contrast */
+    html.teams-contrast .line-latest { color: #ffffff; }
+    html.teams-contrast .line-mid { color: #cccccc; }
+    html.teams-contrast .line-old { color: #aaaaaa; }
+
+    .waiting-msg {
+        margin: auto 0;
+        text-align: center;
+        font-size: var(--font-waiting);
+        color: #333355;
+        line-height: 1.4;
+    }
+    html.teams-light .waiting-msg { color: #aaaacc; }
+    html.teams-contrast .waiting-msg { color: #ffffff; }
+
+    /* ── Scroll indicator ────────────────────────────────────────── */
+    .scroll-indicator {
+        position: absolute;
+        bottom: 6px;
+        right: 4px;
+        font-size: 9px;
+        padding: 2px 6px;
+        border-radius: 3px;
+        user-select: none;
+        z-index: 1;
+        pointer-events: none;
+    }
+
+    .scroll-indicator.live {
+        color: #33aa77;
+        background: transparent;
+        pointer-events: none;
+    }
+
+    .scroll-indicator.jump {
+        background: #1e1e3e;
+        color: #aaaacc;
+        border: 1px solid #33335a;
+        cursor: pointer;
+        pointer-events: auto;
+    }
+
+    html.teams-light .scroll-indicator.live { color: #228855; }
+    html.teams-light .scroll-indicator.jump { background: #e0e0f0; color: #606090; border-color: #c0c0da; }
+    html.teams-contrast .scroll-indicator.live { color: #ffffff; }
+    html.teams-contrast .scroll-indicator.jump { background: #000000; color: #ffffff; border: 1px solid #ffffff; }
+
+    /* ── Divider ─────────────────────────────────────────────────── */
+    .divider {
+        height: 1px;
+        background: #1e1e2e;
+        margin: 6px 0;
+        flex-shrink: 0;
+    }
+    html.teams-light .divider { background: #c4c4da; }
+    html.teams-contrast .divider { background: #ffffff; }
+
+    /* ── Active area ─────────────────────────────────────────────── */
+    .active-area {
+        flex-shrink: 0;
+        min-height: 32px;
+        max-height: 80px;
+        overflow-y: auto;
+        overflow-x: hidden;
+        background: #0a0a12;
+        border-radius: 2px;
+        padding: 2px 0;
+        margin-bottom: 6px;
+        scrollbar-width: thin;
+        scrollbar-color: #22223a transparent;
+    }
+    .active-area::-webkit-scrollbar { width: 3px; }
+    .active-area::-webkit-scrollbar-thumb { background: #22223a; border-radius: 2px; }
+    .active-area::-webkit-scrollbar-track { background: transparent; }
+
+    /* Auto-hide active-area dan divider kalau tinggi viewport terlalu kecil
+       Threshold 200px: cukup untuk committed area saja */
+    @@media (max-height: 200px) {
+        .active-area { display: none; }
+        .divider { display: none; }
+    }
+    html.teams-light .active-area { background: #eeeef8; }
+    html.teams-contrast .active-area { background: #000000; }
+
+    .active-text {
+        font-size: var(--font-active);
+        color: #444466;
+        margin: 0;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+        overflow-wrap: break-word;
+        font-style: italic;
+    }
+    html.teams-light .active-text { color: #9090c0; }
+    html.teams-contrast .active-text { color: #aaaaaa; }
+
+    /* Pop out inline caption area */
+    .popout-caption-area {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-end;
+        padding: 6px 10px;
+        gap: 4px;
+        overflow: hidden;
+        min-height: 0;
+    }
+
+    .popout-prev-line {
+        font-size: var(--font-popout-prev);
+        font-weight: 400;
+        color: #555577;
+        margin: 0;
+        line-height: 1.4;
+        word-wrap: break-word;
+        overflow-wrap: break-word;
+    }
+
+    .popout-current-line {
+        font-size: var(--font-popout-current);
+        margin: 0;
+        line-height: 1.5;
+        word-wrap: break-word;
+        overflow-wrap: break-word;
+    }
+
+    .popout-current-line.is-committed {
+        font-weight: 700;
+        color: #ffffff;
+        font-style: normal;
+    }
+
+    .popout-current-line.is-active {
+        font-weight: 400;
+        color: #aaaacc;
+        font-style: italic;
+    }
+
+    .popout-waiting {
+        font-size: var(--font-popout-waiting);
+        color: #333355;
+        margin: 0;
+        text-align: center;
+        padding: 20px 0;
+    }
+
+    html.teams-light .popout-prev-line { color: #9090b0; }
+    html.teams-light .popout-current-line.is-committed { color: #0e0e2e; }
+    html.teams-light .popout-current-line.is-active { color: #606090; }
+    html.teams-light .popout-waiting { color: #aaaacc; }
+
+    html.teams-contrast .popout-prev-line { color: #aaaaaa; }
+    html.teams-contrast .popout-current-line.is-committed { color: #ffffff; }
+    html.teams-contrast .popout-current-line.is-active { color: #cccccc; }
+    html.teams-contrast .popout-waiting { color: #ffffff; }
+
+    /* Pop out: hide separate active area and divider */
+    .popout-mode .active-area {
+        display: none;
+    }
+    .popout-mode .divider {
+        display: none;
+    }
+
+</style>
+
+<div class="tab-root @(_isPopout ? "popout-mode" : "") @GetFontClass()">
+    <div class="header-bar">
+        <span class="header-spacer"></span>
+
+        <span class="status-badge @(_engineIsRunning ? "badge-live" : "badge-waiting")"
+              title="@(_engineIsRunning ? "Live translation active" : "Waiting for audio stream")"
+              aria-label="@(_engineIsRunning ? "Live translation active" : "Waiting for audio stream")">
+            <span class="status-dot" aria-hidden="true"></span>
+            <span class="status-text">@(_engineIsRunning ? "Live" : "Waiting")</span>
+        </span>
+
+        @if (!_isPopout)
+        {
+            <button class="icon-btn"
+                    aria-label="Open in pop out window"
+                    title="Open in pop out window"
+                    @onclick="OpenPopout">
+                <span class="btn-icon" aria-hidden="true">⧉</span>
+            </button>
+        }
+
+        <button class="icon-btn @(_isSettingsOpen ? "active" : "")"
+                aria-label="Settings"
+                title="Settings"
+                @onclick="ToggleSettings">
+            <span class="btn-icon" aria-hidden="true">⚙</span>
+        </button>
+
+        @if (_isPopout)
+        {
+            <button class="icon-btn"
+                    aria-label="Close pop out"
+                    title="Close pop out"
+                    @onclick="ClosePopout">
+                <span class="btn-icon" aria-hidden="true">✕</span>
+            </button>
+        }
+    </div>
+
+    @if (_isSettingsOpen)
+    {
+        <div class="settings-overlay" @onclick="CloseSettings">
+            <div class="settings-panel" @onclick:stopPropagation="true">
+                <div class="s-row">
+                    <span class="s-lbl">Input</span>
+                    <select class="s-sel" disabled="@_isSwitching"
+                            value="@_selectedInputLang"
+                            @onchange="OnInputLangChange">
+                        @foreach (var option in _inputOptions)
+                        {
+                            <option value="@option.code">@option.label</option>
+                        }
+                    </select>
+                    @if (_selectedInputLang == "auto" && !string.IsNullOrEmpty(_detectedLang))
+                    {
+                        <span class="detected-badge">(@_detectedLang.ToUpperInvariant())</span>
+                    }
+                </div>
+                <div class="s-row">
+                    <span class="s-lbl">Output</span>
+                    <select class="s-sel" disabled="@_isSwitching"
+                            value="@_selectedOutputLang"
+                            @onchange="OnOutputLangChange">
+                        @foreach (var option in _outputOptions)
+                        {
+                            <option value="@option.code">@option.label</option>
+                        }
+                    </select>
+                </div>
+                <div class="s-row">
+                    <span class="s-lbl">Font</span>
+                    <select class="s-sel"
+                            value="@_selectedFontSize"
+                            @onchange="OnFontSizeChange">
+                        @foreach (var option in _fontOptions)
+                        {
+                            <option value="@option.code">@option.label</option>
+                        }
+                    </select>
+                </div>
+                <div class="s-divider"></div>
+                <div class="s-row">
+                    <span class="s-lbl">Mode</span>
+                    <button class="s-pill @(_engineMode == TranslationMode.Direct ? "active" : "")"
+                            disabled="@_isSwitching"
+                            @onclick='() => SetMode(TranslationMode.Direct)'>Direct</button>
+                    <button class="s-pill @(_engineMode == TranslationMode.SttOpenAI ? "active" : "")"
+                            disabled="@_isSwitching"
+                            @onclick='() => SetMode(TranslationMode.SttOpenAI)'>STT+AI</button>
+                </div>
+                <div class="s-divider"></div>
+                <button class="s-action"
+                        disabled="@(_committedLines.Count == 0)"
+                        @onclick="CopyTranscript">
+                    @(_copyConfirm ? "✓ Copied" : "Copy transcript")
+                </button>
+                <button class="s-action @(_engineIsRunning ? "s-stop" : "s-start")"
+                        disabled="@_isSwitching"
+                        @onclick="ToggleEngine">
+                    @(_engineIsRunning ? "■ Stop engine" : "▶ Start engine")
+                </button>
+                <div class="attr-link">
+                    <a href="https://www.flaticon.com/free-icons/languages"
+                       target="_blank"
+                       rel="noopener noreferrer"
+                       title="Languages icons created by Freepik - Flaticon">
+                        Icon: Freepik · Flaticon
+                    </a>
+                </div>
+            </div>
+        </div>
+    }
+
+    @if (_isPopout)
+    {
+        <div class="popout-caption-area">
+            @if (_committedLines.Count > 0 || !string.IsNullOrEmpty(_activeText))
+            {
+                <p class="popout-prev-line"
+                   aria-label="Previous caption line"
+                   aria-live="polite">@_popoutPrevLine</p>
+                <p class="popout-current-line @_popoutCurrentLineClass"
+                   aria-label="Current caption line"
+                   aria-live="polite">
+                    @_popoutCurrentLine
+                </p>
+            }
+            else
+            {
+                <p class="popout-waiting">Waiting for audio stream...</p>
+            }
+        </div>
+    }
+    else
+    {
+        <div class="committed-area-wrapper">
+            <div class="committed-area" @ref="_committedAreaRef" @onscroll="OnCommittedScroll">
+                <div class="spacer"></div>
+                @if (_committedLines.Count == 0 && !_engineIsRunning)
+                {
+                    <p class="waiting-msg">Waiting for audio stream...</p>
+                }
+                @for (int i = 0; i < _committedLines.Count; i++)
+                {
+                    int distFromEnd = _committedLines.Count - 1 - i;
+                    string lineClass = distFromEnd == 0 ? "line-latest"
+                                     : distFromEnd == 1 ? "line-mid"
+                                     : "line-old";
+                    <p class="@lineClass">@_committedLines[i]</p>
+                }
+            </div>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="active-area">
+            <p class="active-text">@_activeText</p>
+        </div>
+    }
+
+</div>
+
+@code {
+    private HubConnection? _hub;
+    private string _activeText = "";
+    private string _meetingId  = "default";
+    private string _debugMsg   = "";
+    private bool   _isSwitching = false;
+    private bool   _engineIsRunning = false;
+    private TranslationMode _engineMode = TranslationMode.Direct;
+    private string _detectedLang = "";
+    private string _selectedInputLang = TranslationDefaults.DefaultInputLanguage;
+    private string _selectedOutputLang = TranslationDefaults.DefaultOutputLanguage;
+    private bool   _userScrolledUp = false;
+    private bool   _copyConfirm = false;
+    private bool   _isPopout = false;
+    private bool   _isSettingsOpen = false;
+    private ElementReference _committedAreaRef;
+    private CancellationTokenSource? _scrollDebounce;
+    private string _selectedFontSize = "medium";
+
+    // Language options shown in the settings bar
+    private static readonly (string code, string label)[] _inputOptions =
+    {
+        ("auto", "Auto detect"),
+        ("id",  "Bahasa Indonesia (Indonesian)"),
+        ("en",  "English"),
+        ("ja",  "日本語 (Japanese)"),
+        ("ko",  "한국어 (Korean)"),
+        ("ms",  "Bahasa Melayu (Malay)"),
+        ("th",  "ภาษาไทย (Thai)"),
+        ("vi",  "Tiếng Việt (Vietnamese)"),
+        ("fil", "Filipino"),
+        ("km",  "ភាសាខ្មែរ (Khmer)"),
+        ("my",  "မြန်မာဘာသာ (Burmese)"),
+        ("lo",  "ພາສາລາວ (Lao)"),
+        ("ta",  "தமிழ் (Tamil)"),
+    };
+    private static readonly (string code, string label)[] _outputOptions =
+    {
+        ("id",  "Bahasa Indonesia (Indonesian)"),
+        ("en",  "English"),
+        ("ja",  "日本語 (Japanese)"),
+        ("ko",  "한국어 (Korean)"),
+        ("ms",  "Bahasa Melayu (Malay)"),
+        ("th",  "ภาษาไทย (Thai)"),
+        ("vi",  "Tiếng Việt (Vietnamese)"),
+        ("fil", "Filipino"),
+        ("km",  "ភាសាខ្មែរ (Khmer)"),
+        ("my",  "မြန်မာဘာသာ (Burmese)"),
+        ("lo",  "ພາສາລາວ (Lao)"),
+        ("ta",  "தமிழ் (Tamil)"),
+    };
+    private static readonly (string code, string label)[] _fontOptions =
+    {
+        ("small", "Small"),
+        ("medium", "Medium"),
+        ("large", "Large"),
+    };
+    private static readonly HashSet<string> _inputOptionCodes =
+        _inputOptions.Select(option => option.code).ToHashSet(StringComparer.OrdinalIgnoreCase);
+    private static readonly HashSet<string> _outputOptionCodes =
+        _outputOptions.Select(option => option.code).ToHashSet(StringComparer.OrdinalIgnoreCase);
+    private static readonly HashSet<string> _fontOptionCodes =
+        _fontOptions.Select(option => option.code).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    private readonly List<string> _committedLines = new();
+    private readonly Queue<string> _committedQueue = new();
+    private readonly object _committedQueueLock = new();
+    private readonly CancellationTokenSource _disposeCts = new();
+    private bool _draining = false;
+    private const int CommittedMaxLines = 1000;
+    private const int CommittedMinWords = 3;
+    private const int CommittedRenderDelayMs = 300;
+    private const int CommittedOverlapLookbackLines = 6;
+    private const int NonLatinMinOverlapChars = 4;
+    private const double NonLatinMinOverlapRatio = 0.35;
+    private const double NonLatinContainmentRatioThreshold = 0.55;
+    private const int NonLatinLcsMaxChars = 256;
+    private const int NonLatinOverlapScanMaxChars = 320;
+    private const int ActiveFallbackMinWords = 6;
+    private const int ActiveFallbackChunkWords = 14;
+    private const int ActiveFallbackHardCapWords = 20;
+    private const int ActiveFallbackStableMs = 850;
+    private const int ActiveFallbackMaxAgeMs = 2200;
+    private const int ActiveFallbackNonLatinChunkChars = 28;
+    private const int ActiveFallbackNonLatinHardCapChars = 48;
+    private const int ScrollDebounceDelayMs = 80;
+    private const int CopyConfirmationDelayMs = 2000;
+    private const string CaptionFontSizePreferenceKey = "kidai_caption_font_size";
+
+    private string _lastCommittedText = "";
+    private string _activeRawText = "";
+    private string _activeRollingRemainder = "";
+    private string _activeLastSnapshot = "";
+    private DateTime _activeLastChangedAt = DateTime.UtcNow;
+
+    private string _popoutCurrentLine
+    {
+        get
+        {
+            if (!string.IsNullOrEmpty(_activeText))
+                return _activeText;
+            if (_committedLines.Count > 0)
+                return _committedLines[^1];
+            return "";
+        }
+    }
+
+    private string _popoutPrevLine
+    {
+        get
+        {
+            if (!string.IsNullOrEmpty(_activeText))
+                return _committedLines.Count > 0 ? _committedLines[^1] : "";
+            return _committedLines.Count >= 2 ? _committedLines[^2] : "";
+        }
+    }
+
+    private string _popoutCurrentLineClass =>
+        string.IsNullOrEmpty(_activeText) ? "is-committed" : "is-active";
+
+    protected override void OnInitialized()
+    {
+        var uri = new Uri(Nav.Uri);
+        var query = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(uri.Query);
+        var popoutValue = query.TryGetValue("popout", out var values)
+            ? values.FirstOrDefault()
+            : null;
+        _isPopout = string.Equals(popoutValue, "true", StringComparison.OrdinalIgnoreCase);
+
+        // Baca meetingId dari query string, fallback ke "default"
+        if (query.TryGetValue("meetingId", out var meetingValues))
+        {
+            var mid = meetingValues.FirstOrDefault();
+            if (!string.IsNullOrWhiteSpace(mid))
+                _meetingId = mid;
+        }
+
+        if (query.TryGetValue("inputLang", out var inputValues))
+        {
+            var inputLang = inputValues.FirstOrDefault();
+            if (!string.IsNullOrWhiteSpace(inputLang) && _inputOptionCodes.Contains(inputLang))
+                _selectedInputLang = inputLang;
+        }
+
+        if (query.TryGetValue("outputLang", out var outputValues))
+        {
+            var outputLang = outputValues.FirstOrDefault();
+            if (!string.IsNullOrWhiteSpace(outputLang) && _outputOptionCodes.Contains(outputLang))
+                _selectedOutputLang = outputLang;
+        }
+
+        if (Sessions.TryGetSession(_meetingId, out var existingSession))
+        {
+            _engineIsRunning = existingSession.Engine.IsRunning;
+            _engineMode = existingSession.Engine.Mode;
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadFontPreference();
+
+        try
+        {
+            _hub = new HubConnectionBuilder()
+                .WithUrl(Nav.ToAbsoluteUri("/hubs/translation"))
+                .WithAutomaticReconnect()
+                .Build();
+
+            _hub.Reconnected += async _ =>
+            {
+                try
+                {
+                    await _hub.SendAsync("JoinMeeting", _meetingId);
+                    await _hub.SendAsync("SetInputLanguage", _selectedInputLang);
+                    await _hub.SendAsync("SetOutputLanguage", _selectedOutputLang);
+                }
+                catch (Exception ex)
+                {
+                    _debugMsg = $"Reconnect: {ex.Message}";
+                    Console.WriteLine($"[TAB] Reconnect sync error: {ex}");
+                }
+            };
+
+            _hub.On<string>("ReceiveActive", text =>
+            {
+                HandleIncomingActive(text ?? "");
+                InvokeAsync(StateHasChanged);
+            });
+
+            _hub.On<string>("ReceiveCommitted", text =>
+            {
+                if (string.IsNullOrWhiteSpace(text)) return;
+                ResetActiveTracking();
+                EnqueueCommitted(text.Trim());
+            });
+
+            _hub.On<string>("EngineStarted", _ =>
+            {
+                _engineIsRunning = true;
+                InvokeAsync(StateHasChanged);
+            });
+
+            _hub.On<string>("EngineStopped", _ =>
+            {
+                _engineIsRunning = false;
+                InvokeAsync(StateHasChanged);
+            });
+
+            _hub.On<string>("EngineModeChanged", mode =>
+            {
+                if (Enum.TryParse<TranslationMode>(mode, true, out var parsedMode))
+                    _engineMode = parsedMode;
+                InvokeAsync(StateHasChanged);
+            });
+
+            _hub.On<bool, string>("EngineState", (isRunning, mode) =>
+            {
+                _engineIsRunning = isRunning;
+                if (Enum.TryParse<TranslationMode>(mode, true, out var parsedMode))
+                    _engineMode = parsedMode;
+                InvokeAsync(StateHasChanged);
+            });
+
+            _hub.On<string>("LanguageDetected", OnLanguageDetectedHandler);
+            _hub.On<string>("EngineError", OnEngineErrorHandler);
+
+            await _hub.StartAsync();
+            await _hub.SendAsync("JoinMeeting", _meetingId);
+            await _hub.SendAsync("SetInputLanguage", _selectedInputLang);
+            await _hub.SendAsync("SetOutputLanguage", _selectedOutputLang);
+        }
+        catch (Exception ex)
+        {
+            _debugMsg = $"ERROR: {ex.GetType().Name}: {ex.Message}";
+            Console.WriteLine($"[TAB ERROR] {ex}");
+        }
+    }
+
+    // ── Engine event handlers ────────────────────────────────────────────────
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender && _isPopout)
+        {
+            try { await JS.InvokeVoidAsync("tabHelpers.registerPopoutStateListener"); }
+            catch { }
+        }
+
+        if (!_isPopout && !_userScrolledUp)
+        {
+            try { await JS.InvokeVoidAsync("tabHelpers.scrollToBottom", _committedAreaRef); }
+            catch { /* element not yet available on early renders */ }
+        }
+    }
+
+    private async Task OnCommittedScroll()
+    {
+        _scrollDebounce?.Cancel();
+        _scrollDebounce = new CancellationTokenSource();
+        var token = _scrollDebounce.Token;
+        try
+        {
+            await Task.Delay(ScrollDebounceDelayMs, token);
+            var atBottom = await JS.InvokeAsync<bool>("tabHelpers.isScrolledToBottom", _committedAreaRef);
+            bool newScrolledUp = !atBottom;
+            if (newScrolledUp != _userScrolledUp)
+            {
+                _userScrolledUp = newScrolledUp;
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (OperationCanceledException) { /* debounced */ }
+        catch { /* ignore interop errors */ }
+    }
+
+    private async Task JumpToLive()
+    {
+        _userScrolledUp = false;
+        try { await JS.InvokeVoidAsync("tabHelpers.scrollToBottom", _committedAreaRef); }
+        catch { /* ignore interop errors */ }
+        StateHasChanged();
+    }
+
+    private async Task CopyTranscript()
+    {
+        if (_committedLines.Count == 0) return;
+        var header = $"[KID AI Live Translation — {DateTime.Now:yyyy-MM-dd HH:mm}]";
+        var content = string.Join("\n", _committedLines);
+        var fullText = $"{header}\n\n{content}";
+        try
+        {
+            await JS.InvokeVoidAsync("tabHelpers.copyToClipboard", fullText);
+            _copyConfirm = true;
+            StateHasChanged();
+            await Task.Delay(CopyConfirmationDelayMs);
+            _copyConfirm = false;
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[TAB] CopyTranscript error: {ex.Message}");
+        }
+    }
+
+    private void OnLanguageDetectedHandler(string lang)
+    {
+        _detectedLang = lang;
+        InvokeAsync(StateHasChanged);
+    }
+
+    private void OnEngineErrorHandler(string error)
+    {
+        _debugMsg = $"ENGINE: {error}";
+        InvokeAsync(StateHasChanged);
+    }
+
+    // ── Settings bar control methods ─────────────────────────────────────────
+
+    private void ToggleSettings()
+        => _isSettingsOpen = !_isSettingsOpen;
+
+    private void CloseSettings()
+        => _isSettingsOpen = false;
+
+    private async Task OpenPopout()
+    {
+        var saved = await JS.InvokeAsync<object?>("tabHelpers.getPopoutState");
+        await JS.InvokeVoidAsync("tabHelpers.openPopout", saved, new
+        {
+            inputLang = _selectedInputLang,
+            outputLang = _selectedOutputLang,
+            meetingId = _meetingId
+        });
+    }
+
+    private async Task ClosePopout()
+    {
+        await JS.InvokeVoidAsync("window.close");
+    }
+
+    private async Task OnInputLangChange(ChangeEventArgs e)
+        => await SetInput(e.Value?.ToString() ?? TranslationDefaults.DefaultInputLanguage);
+
+    private async Task OnOutputLangChange(ChangeEventArgs e)
+        => await SetOutput(e.Value?.ToString() ?? TranslationDefaults.DefaultOutputLanguage);
+
+    private async Task OnFontSizeChange(ChangeEventArgs e)
+        => await SetFontSize(e.Value?.ToString() ?? "medium");
+
+    private async Task SetInput(string lang)
+    {
+        if (_selectedInputLang == lang) return;
+        _selectedInputLang = lang;
+        try
+        {
+            _detectedLang = "";
+            if (_hub is not null && _hub.State == HubConnectionState.Connected)
+                await _hub.SendAsync("SetInputLanguage", lang);
+        }
+        catch (Exception ex)
+        {
+            _debugMsg = $"Input preference: {ex.Message}";
+            Console.WriteLine($"[TAB] SetInput error: {ex}");
+        }
+    }
+
+    private async Task SetOutput(string lang)
+    {
+        if (_selectedOutputLang == lang) return;
+        _selectedOutputLang = lang;
+        try
+        {
+            if (_hub is not null && _hub.State == HubConnectionState.Connected)
+                await _hub.SendAsync("SetOutputLanguage", lang);
+        }
+        catch (Exception ex)
+        {
+            _debugMsg = $"Output preference: {ex.Message}";
+            Console.WriteLine($"[TAB] SetOutput error: {ex}");
+        }
+    }
+
+    private async Task SetMode(TranslationMode mode)
+    {
+        if (_isSwitching || _engineMode == mode) return;
+        _isSwitching = true;
+        StateHasChanged();
+        try
+        {
+            if (_hub is not null && _hub.State == HubConnectionState.Connected)
+            {
+                await _hub.SendAsync("SwitchMode", _meetingId, mode.ToString());
+            }
+        }
+        catch (Exception ex)
+        {
+            _debugMsg = $"Mode switch: {ex.Message}";
+            Console.WriteLine($"[TAB] SetMode error: {ex}");
+        }
+        finally { _isSwitching = false; }
+    }
+
+    private async Task SetFontSize(string size)
+    {
+        if (!IsValidFontSize(size) || _selectedFontSize == size) return;
+        _selectedFontSize = size;
+        try { await JS.InvokeVoidAsync("tabHelpers.setPreference", CaptionFontSizePreferenceKey, size); }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[TAB] Save font preference error: {ex.Message}");
+        }
+    }
+
+    private async Task LoadFontPreference()
+    {
+        try
+        {
+            var savedFont = await JS.InvokeAsync<string?>("tabHelpers.getPreference", CaptionFontSizePreferenceKey);
+            if (savedFont is not null
+                && IsValidFontSize(savedFont)
+                && !string.Equals(_selectedFontSize, savedFont, StringComparison.OrdinalIgnoreCase))
+            {
+                _selectedFontSize = savedFont;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[TAB] Load font preference error: {ex.Message}");
+        }
+    }
+
+    private static bool IsValidFontSize(string size)
+        => _fontOptionCodes.Contains(size);
+
+    private string GetFontClass() => $"font-{_selectedFontSize}";
+
+    private async Task ToggleEngine()
+    {
+        if (_isSwitching) return;
+        _isSwitching = true;
+        StateHasChanged();
+        try
+        {
+            if (_hub is null || _hub.State != HubConnectionState.Connected)
+                return;
+
+            if (_engineIsRunning)
+            {
+                await _hub.SendAsync("StopEngine", _meetingId);
+            }
+            else
+            {
+                await _hub.SendAsync("StartEngine", _meetingId);
+            }
+        }
+        catch (Exception ex)
+        {
+            _debugMsg = $"Engine: {ex.Message}";
+            Console.WriteLine($"[TAB] ToggleEngine error: {ex}");
+        }
+        finally { _isSwitching = false; }
+    }
+
+    private void AppendCommitted(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return;
+        AppendCommittedUnit(text);
+        if (_committedLines.Count > 0)
+            _lastCommittedText = _committedLines[^1];
+        while (_committedLines.Count > CommittedMaxLines)
+            _committedLines.RemoveAt(0);
+    }
+
+    private void HandleIncomingActive(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            ResetActiveTracking();
+            return;
+        }
+
+        var normalized = NormalizeActiveText(text);
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            ResetActiveTracking();
+            return;
+        }
+
+        var now = DateTime.UtcNow;
+        if (!string.Equals(normalized, _activeLastSnapshot, StringComparison.Ordinal))
+        {
+            _activeLastSnapshot = normalized;
+            _activeLastChangedAt = now;
+        }
+
+        if (string.IsNullOrWhiteSpace(_activeRawText))
+        {
+            _activeRollingRemainder = normalized;
+        }
+        else if (normalized.StartsWith(_activeRawText, StringComparison.Ordinal))
+        {
+            var delta = normalized.Substring(_activeRawText.Length).TrimStart();
+            if (!string.IsNullOrWhiteSpace(delta))
+                _activeRollingRemainder = string.IsNullOrWhiteSpace(_activeRollingRemainder)
+                    ? normalized
+                    : $"{_activeRollingRemainder} {delta}".Trim();
+            else if (string.IsNullOrWhiteSpace(_activeRollingRemainder))
+                _activeRollingRemainder = normalized;
+        }
+        else
+        {
+            _activeRollingRemainder = normalized;
+        }
+
+        _activeRawText = normalized;
+        if (_engineMode != TranslationMode.SttOpenAI)
+            PromoteCommittedFromActive(now);
+        _activeText = NormalizeActiveText(_activeRollingRemainder);
+    }
+
+    private void ResetActiveTracking()
+    {
+        _activeText = "";
+        _activeRawText = "";
+        _activeRollingRemainder = "";
+        _activeLastSnapshot = "";
+        _activeLastChangedAt = DateTime.UtcNow;
+    }
+
+    private void PromoteCommittedFromActive(DateTime nowUtc)
+    {
+        while (TryTakeCompleteSentenceChunk(ref _activeRollingRemainder, out var sentence))
+        {
+            if (!string.IsNullOrWhiteSpace(sentence))
+                EnqueueCommitted(sentence);
+        }
+
+        if (TryTakeFallbackChunk(ref _activeRollingRemainder, nowUtc, out var chunk))
+        {
+            if (!string.IsNullOrWhiteSpace(chunk))
+                EnqueueCommitted(chunk);
+        }
+    }
+
+    private void EnqueueCommitted(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return;
+        bool shouldDrain = false;
+        lock (_committedQueueLock)
+        {
+            if (_disposeCts.IsCancellationRequested) return;
+            _committedQueue.Enqueue(text.Trim());
+            if (!_draining)
+            {
+                _draining = true;
+                shouldDrain = true;
+            }
+        }
+        if (shouldDrain)
+            _ = InvokeAsync(DrainCommittedQueue);
+    }
+
+    private async Task DrainCommittedQueue()
+    {
+        try
+        {
+            while (!_disposeCts.IsCancellationRequested)
+            {
+                string? text = null;
+                lock (_committedQueueLock)
+                {
+                    if (_disposeCts.IsCancellationRequested)
+                    {
+                        _draining = false;
+                        return;
+                    }
+                    if (_committedQueue.Count == 0)
+                    {
+                        _draining = false;
+                        return;
+                    }
+                    text = _committedQueue.Dequeue();
+                }
+
+                if (_disposeCts.IsCancellationRequested)
+                    break;
+                AppendCommitted(text);
+                await InvokeAsync(StateHasChanged);
+                await Task.Delay(CommittedRenderDelayMs, _disposeCts.Token);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Component is disposing; stop draining gracefully.
+        }
+        finally
+        {
+            lock (_committedQueueLock)
+            {
+                _draining = false;
+            }
+        }
+    }
+
+    private void AppendCommittedUnit(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return;
+        text = text.Trim();
+        if (!ContainsNonLatinScript(text) && WordCount(text) < CommittedMinWords) return;
+        if (TryMergeWithExistingCommitted(text, out var ri, out var rt, out var skip))
+        {
+            if (skip) return;
+            if (ri >= 0) _committedLines[ri] = rt;
+            return;
+        }
+        _committedLines.Add(text);
+    }
+
+    private string StripAlreadyCommittedOverlap(string text)
+    {
+        if (string.IsNullOrWhiteSpace(_lastCommittedText) || _committedLines.Count == 0)
+            return text;
+        var t = text.Trim();
+        int start = Math.Max(0, _committedLines.Count - CommittedOverlapLookbackLines);
+        for (int i = _committedLines.Count - 1; i >= start; i--)
+        {
+            var committed = _committedLines[i].Trim();
+            if (string.IsNullOrWhiteSpace(committed) || committed.Length < 10) continue;
+            if (string.Equals(t, committed, StringComparison.OrdinalIgnoreCase)) return "";
+            if (t.StartsWith(committed, StringComparison.OrdinalIgnoreCase))
+                return t.Substring(committed.Length).TrimStart(' ', ',', '.', ';', '\u3001', '\uff0c');
+
+            bool nonLatin = ContainsNonLatinScript(committed) || ContainsNonLatinScript(t);
+            if (nonLatin)
+            {
+                int overlap = FindSuffixPrefixOverlap(committed, t);
+                if (overlap >= NonLatinMinOverlapChars)
+                {
+                    int shorter = Math.Min(committed.Length, t.Length);
+                    if (shorter > 0 && (double)overlap / shorter >= NonLatinMinOverlapRatio)
+                        return t.Substring(overlap).TrimStart(' ', ',', '.', ';', '\u3001', '\uff0c');
+                }
+                // Non-Latin scripts here are dominated by no-space writing systems;
+                // skip word-split overlap checks that rely on whitespace boundaries.
+                continue;
+            }
+
+            var cWords = committed.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            var tWords = t.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            int maxOverlap = Math.Min(cWords.Length, Math.Min(tWords.Length, 8));
+            for (int overlap = maxOverlap; overlap >= 3; overlap--)
+            {
+                bool match = true;
+                for (int k = 0; k < overlap; k++)
+                {
+                    var cw = NormalizeWordForCompare(cWords[cWords.Length - overlap + k]);
+                    var tw = NormalizeWordForCompare(tWords[k]);
+                    if (!string.Equals(cw, tw, StringComparison.OrdinalIgnoreCase))
+                    { match = false; break; }
+                }
+                if (match)
+                    return string.Join(" ", tWords, overlap, tWords.Length - overlap).Trim();
+            }
+        }
+        return t;
+    }
+
+    private static int FindSuffixPrefixOverlap(string committed, string incoming)
+    {
+        if (string.IsNullOrWhiteSpace(committed) || string.IsNullOrWhiteSpace(incoming)) return 0;
+        var c = committed.Length > NonLatinOverlapScanMaxChars
+            ? committed[^NonLatinOverlapScanMaxChars..]
+            : committed;
+        var i = incoming.Length > NonLatinOverlapScanMaxChars
+            ? incoming[..NonLatinOverlapScanMaxChars]
+            : incoming;
+
+        int max = Math.Min(c.Length, i.Length);
+        for (int len = max; len >= NonLatinMinOverlapChars; len--)
+        {
+            if (c.AsSpan(c.Length - len, len)
+                    .Equals(i.AsSpan(0, len), StringComparison.OrdinalIgnoreCase))
+                return len;
+        }
+        return 0;
+    }
+
+    private bool TryMergeWithExistingCommitted(string text,
+        out int index, out string replacement, out bool shouldSkip)
+    {
+        index = -1; replacement = text; shouldSkip = false;
+        if (_committedLines.Count == 0) return false;
+        int bestIndex = -1, bestPriority = 0;
+        string bestReplacement = text;
+        for (int i = _committedLines.Count - 1; i >= 0; i--)
+        {
+            var existing = _committedLines[i].Trim();
+            if (string.IsNullOrWhiteSpace(existing)) continue;
+            if (string.Equals(existing, text, StringComparison.OrdinalIgnoreCase))
+            { shouldSkip = true; return true; }
+            if (text.StartsWith(existing, StringComparison.OrdinalIgnoreCase))
+            { if (bestPriority < 2) { bestIndex = i; bestPriority = 2; bestReplacement = text; } continue; }
+            if (existing.StartsWith(text, StringComparison.OrdinalIgnoreCase))
+            { shouldSkip = true; return true; }
+            if (IsNearDuplicate(existing, text, 0.82))
+            {
+                if (text.Length > existing.Length)
+                { if (bestPriority < 2) { bestIndex = i; bestPriority = 2; bestReplacement = text; } }
+                else { shouldSkip = true; return true; }
+                continue;
+            }
+            if (IsLikelyRevisionOf(existing, text))
+            {
+                if (text.Length >= existing.Length)
+                { if (bestPriority < 2) { bestIndex = i; bestPriority = 2; bestReplacement = text; } }
+                else { shouldSkip = true; return true; }
+            }
+        }
+        if (bestPriority > 0) { index = bestIndex; replacement = bestReplacement; return true; }
+        return false;
+    }
+
+    private static bool ContainsNonLatinScript(string text)
+    {
+        foreach (var c in text)
+        {
+            if (c >= 0x3000 && c <= 0x9FFF) return true; // CJK, Japanese
+            if (c >= 0x1780 && c <= 0x17FF) return true; // Khmer
+            if (c >= 0x1000 && c <= 0x109F) return true; // Myanmar/Burmese
+            if (c >= 0x0E80 && c <= 0x0EFF) return true; // Lao
+            if (c >= 0x0E00 && c <= 0x0E7F) return true; // Thai
+            if (c >= 0x0B80 && c <= 0x0BFF) return true; // Tamil
+            if (c >= 0xAC00 && c <= 0xD7AF) return true; // Hangul Syllables
+            if (c >= 0x1100 && c <= 0x11FF) return true; // Hangul Jamo
+        }
+        return false;
+    }
+
+    private static int WordCount(string text) =>
+        string.IsNullOrWhiteSpace(text) ? 0
+        : text.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
+
+    private static string NormalizeActiveText(string text)
+        => string.Join(" ", (text ?? "").Trim().Split(
+            new[] { ' ', '\t', '\r', '\n' },
+            StringSplitOptions.RemoveEmptyEntries));
+
+    private static bool IsSentenceTerminal(char c)
+        => c is '.' or '!' or '?' or '\u3002' or '\uff01' or '\uff1f' or '\u17D4' or '\u17D5' or '\u0964';
+
+    private static bool IsSoftBoundary(char c)
+        => c is ',' or ';' or ':' or '，' or '、' or '；' or '：';
+
+    private static bool EndsAtSemanticBoundary(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        var trimmed = text.TrimEnd();
+        if (trimmed.Length == 0) return false;
+        var last = trimmed[^1];
+        return IsSentenceTerminal(last) || IsSoftBoundary(last);
+    }
+
+    private static bool TryTakeCompleteSentenceChunk(ref string text, out string chunk)
+    {
+        chunk = "";
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        var t = text.Trim();
+        int splitAt = -1;
+        for (int i = 0; i < t.Length; i++)
+        {
+            if (!IsSentenceTerminal(t[i])) continue;
+            if (i == t.Length - 1)
+            {
+                splitAt = i + 1;
+                break;
+            }
+            if (char.IsWhiteSpace(t[i + 1]))
+            {
+                splitAt = i + 1;
+                break;
+            }
+        }
+
+        if (splitAt <= 0) return false;
+
+        var candidate = t[..splitAt].Trim();
+        var remainder = t[splitAt..].TrimStart();
+        if (string.IsNullOrWhiteSpace(candidate)) return false;
+        if (!ContainsNonLatinScript(candidate) && WordCount(candidate) < CommittedMinWords) return false;
+
+        chunk = candidate;
+        text = remainder;
+        return true;
+    }
+
+    private bool TryTakeFallbackChunk(ref string text, DateTime nowUtc, out string chunk)
+    {
+        chunk = "";
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        var t = text.Trim();
+        var stableMs = (nowUtc - _activeLastChangedAt).TotalMilliseconds;
+        bool stableReady = stableMs >= ActiveFallbackStableMs;
+        bool nonLatin = ContainsNonLatinScript(t);
+
+        if (nonLatin)
+        {
+            bool shouldChunk =
+                (stableReady && (t.Length >= ActiveFallbackNonLatinHardCapChars || EndsAtSemanticBoundary(t)))
+                || stableMs >= ActiveFallbackMaxAgeMs;
+            if (!shouldChunk) return false;
+            int take = Math.Min(ActiveFallbackNonLatinChunkChars, t.Length);
+            chunk = t[..take].Trim();
+            text = t[take..].TrimStart();
+            return !string.IsNullOrWhiteSpace(chunk);
+        }
+
+        int wc = WordCount(t);
+        bool shouldFallback =
+            (stableReady && wc >= ActiveFallbackHardCapWords)
+            || (stableReady && wc >= ActiveFallbackChunkWords && EndsAtSemanticBoundary(t))
+            || (wc >= ActiveFallbackMinWords && stableMs >= ActiveFallbackMaxAgeMs);
+        if (!shouldFallback) return false;
+
+        var words = t.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        int takeWords = Math.Min(ActiveFallbackChunkWords, words.Length);
+        if (takeWords < ActiveFallbackMinWords) return false;
+        chunk = string.Join(" ", words, 0, takeWords).Trim();
+        text = words.Length > takeWords
+            ? string.Join(" ", words, takeWords, words.Length - takeWords).Trim()
+            : "";
+        return !string.IsNullOrWhiteSpace(chunk);
+    }
+
+    private static string NormalizeWordForCompare(string word) =>
+        word.Trim().Trim(',', '.', ';', ':', '?', '!', '"', '\'');
+
+    private static bool IsNearDuplicate(string a, string b, double threshold = 0.88)
+    {
+        var na = NormalizeForDisplay(a);
+        var nb = NormalizeForDisplay(b);
+        bool nonLatin = ContainsNonLatinScript(a) || ContainsNonLatinScript(b);
+        if (na == nb) return true;
+        if (na.Length < 4 || nb.Length < 4) return false;
+        if (na.StartsWith(nb) || nb.StartsWith(na)) return true;
+        if (nonLatin)
+        {
+            if (na.Contains(nb) || nb.Contains(na))
+            {
+                var shorter = Math.Min(na.Length, nb.Length);
+                var longer  = Math.Max(na.Length, nb.Length);
+                if (longer > 0 && (double)shorter / longer >= NonLatinContainmentRatioThreshold) return true;
+            }
+
+            if (na.Length <= NonLatinLcsMaxChars && nb.Length <= NonLatinLcsMaxChars)
+            {
+                var lcs = LongestCommonSubstringLength(na, nb);
+                var denom = Math.Min(na.Length, nb.Length);
+                if (denom > 0 && (double)lcs / denom >= threshold) return true;
+            }
+        }
+        // For non-Latin scripts WordCount is misleading — use char-level similarity
+        int min = Math.Min(na.Length, nb.Length), same = 0;
+        for (int i = 0; i < min; i++) if (na[i] == nb[i]) same++;
+        return (double)same / Math.Max(na.Length, nb.Length) >= threshold;
+    }
+
+    private static int LongestCommonSubstringLength(string a, string b)
+    {
+        if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b)) return 0;
+        var dp = new int[b.Length + 1];
+        int best = 0;
+        for (int i = 1; i <= a.Length; i++)
+        {
+            int prev = 0;
+            for (int j = 1; j <= b.Length; j++)
+            {
+                int tmp = dp[j];
+                if (a[i - 1] == b[j - 1])
+                {
+                    dp[j] = prev + 1;
+                    if (dp[j] > best) best = dp[j];
+                }
+                else
+                {
+                    dp[j] = 0;
+                }
+                prev = tmp;
+            }
+        }
+        return best;
+    }
+
+    private static bool IsLikelyRevisionOf(string existing, string text)
+    {
+        // Non-Latin scripts don't use spaces as word boundaries — use IsNearDuplicate instead
+        if (ContainsNonLatinScript(existing) || ContainsNonLatinScript(text))
+            return IsNearDuplicate(existing, text, 0.75);
+        var ew = existing.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var tw = text.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (ew.Length < 6 || tw.Length < 6) return false;
+        int shared = 0, maxCheck = Math.Min(ew.Length, tw.Length);
+        for (int i = 0; i < maxCheck; i++)
+        {
+            if (string.Equals(NormalizeWordForCompare(ew[i]),
+                NormalizeWordForCompare(tw[i]),
+                StringComparison.OrdinalIgnoreCase)) shared++;
+            else break;
+        }
+        return shared >= 6 && (double)shared / Math.Min(ew.Length, tw.Length) >= 0.55;
+    }
+
+    private static string NormalizeForDisplay(string text)
+    {
+        var sb = new System.Text.StringBuilder();
+        bool prevSpace = false;
+        foreach (var c in text.ToLowerInvariant())
+        {
+            // Preserve letters (including non-Latin scripts), digits, and collapse whitespace
+            if (char.IsLetter(c) || char.IsDigit(c)) { sb.Append(c); prevSpace = false; }
+            else if (char.IsWhiteSpace(c) && !prevSpace) { sb.Append(' '); prevSpace = true; }
+        }
+        return sb.ToString().Trim();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _scrollDebounce?.Cancel();
+        _scrollDebounce?.Dispose();
+        lock (_committedQueueLock)
+        {
+            _disposeCts.Cancel();
+            _committedQueue.Clear();
+            _draining = false;
+        }
+        if (_hub is not null)
+        {
+            await _hub.SendAsync("LeaveMeeting", _meetingId);
+            await _hub.DisposeAsync();
+        }
+    }
+}

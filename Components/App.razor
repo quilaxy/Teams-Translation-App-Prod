@@ -1,0 +1,33 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <base href="/" />
+    <title>KID AI Translation</title>
+    <link rel="stylesheet" href="Teams-Translation-App.styles.css" />
+    <link rel="icon" type="image/png" href="favicon.png" />
+    <HeadOutlet />
+</head>
+
+<body>
+    <ErrorBoundary>
+        <ChildContent>
+            <Routes />
+        </ChildContent>
+        <ErrorContent Context="ex">
+            <p style="color:red;padding:20px">
+                Error: @ex.Message<br/>
+                <pre>@ex.StackTrace</pre>
+            </p>
+        </ErrorContent>
+    </ErrorBoundary>
+    <script src="https://res.cdn.office.net/teams-js/2.22.0/js/MicrosoftTeams.min.js"></script>
+    <script src="/js/teams-init.js"></script>
+    <script src="/js/tab-helpers.js"></script>
+    <script src="/js/tab-config.js"></script>
+    <script src="_framework/blazor.web.js"></script>
+</body>
+
+</html>

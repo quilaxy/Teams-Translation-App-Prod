@@ -1,0 +1,28 @@
+@page "/tab-config"
+@layout EmptyLayout
+
+<PageTitle>KID AI Live Translation - Configure Tab</PageTitle>
+
+<div style="font-family:'Segoe UI',sans-serif;padding:16px;color:var(--teams-tab-config-foreground,#f3f2f1);">
+    <h3 style="margin:0 0 8px;">KID AI Live Translation</h3>
+    <p style="margin:0;">Click <strong>Save</strong> in Teams to add this meeting app.</p>
+</div>
+
+<script>
+    // Give script loading a short grace period (5s total) in Teams add-app dialog.
+    const MAX_INIT_RETRIES = 100;
+    const RETRY_DELAY_MS = 50;
+
+    (function initTeamsTabConfig(attempt) {
+        attempt = attempt || 0;
+        if (window.teamsTabConfig && typeof window.teamsTabConfig.initialize === "function") {
+            window.teamsTabConfig.initialize();
+            return;
+        }
+        if (attempt >= MAX_INIT_RETRIES) {
+            console.warn("[TEAMS] Teams tab configuration handler did not initialize in time. Please refresh and verify Teams SDK/script loading.");
+            return;
+        }
+        window.setTimeout(function () { initTeamsTabConfig(attempt + 1); }, RETRY_DELAY_MS);
+    })(0);
+</script>

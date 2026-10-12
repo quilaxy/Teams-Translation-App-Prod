@@ -1,0 +1,65 @@
+{
+    "$schema": "https://developer.microsoft.com/json-schemas/teams/v1.16/MicrosoftTeams.schema.json",
+    "manifestVersion": "1.16",
+    "version": "1.0.4",
+    "id": "8507f0a5-0e21-4269-80f2-a3bf751f1aa3",
+    "packageName": "com.kddi-ann.live-translation",
+    "developer": {
+        "name": "KDDI-ANN",
+        "websiteUrl": "https://kid-translation-caeuevabg5g4d9hm.southeastasia-01.azurewebsites.net",
+        "privacyUrl": "https://kid-translation-caeuevabg5g4d9hm.southeastasia-01.azurewebsites.net/privacy",
+        "termsOfUseUrl": "https://kid-translation-caeuevabg5g4d9hm.southeastasia-01.azurewebsites.net/terms"
+    },
+    "icons": {
+        "color": "color.png",
+        "outline": "outline.png"
+    },
+    "name": {
+        "short": "KID AI Live Translation",
+        "full": "KID AI Live Translation for Teams Meetings"
+    },
+    "description": {
+        "short": "Real-time speech translation in your meeting",
+        "full": "Live multi-language speech-to-text translation powered by Azure Cognitive Services and Azure OpenAI."
+    },
+    "accentColor": "#0e0e16",
+    "staticTabs": [
+        {
+            "entityId": "liveTranslationPersonal",
+            "name": "KID AI Live Translation",
+            "contentUrl": "https://kid-translation-caeuevabg5g4d9hm.southeastasia-01.azurewebsites.net/translation-tab",
+            "scopes": ["personal"]
+        }
+    ],
+    "configurableTabs": [
+        {
+            "configurationUrl": "https://kid-translation-caeuevabg5g4d9hm.southeastasia-01.azurewebsites.net/tab-config",
+            "canUpdateConfiguration": true,
+            "scopes": ["groupChat", "team"],
+            "context": ["meetingSidePanel"]
+        }
+    ],
+    "bots": [],
+    "connectors": [],
+    "composeExtensions": [],
+    "permissions": ["identity", "messageTeamMembers"],
+    "validDomains": ["kid-translation-caeuevabg5g4d9hm.southeastasia-01.azurewebsites.net"],
+    "webApplicationInfo": {
+        "id": "d778998b-615c-4de0-b99a-b9f0a854a95a",
+        "resource": "api://kid-translation-caeuevabg5g4d9hm.southeastasia-01.azurewebsites.net/d778998b-615c-4de0-b99a-b9f0a854a95a"
+    },
+    "meetingExtensionDefinition": {
+        "scenes": [],
+        "supportsStreaming": false
+    },
+    "authorization": {
+        "permissions": {
+            "resourceSpecific": [
+                {
+                    "name": "OnlineMeeting.ReadBasic.Chat",
+                    "type": "Delegated"
+                }
+            ]
+        }
+    }
+}
