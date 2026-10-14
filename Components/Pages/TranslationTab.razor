@@ -635,12 +635,12 @@
                 <div class="s-divider"></div>
                 <div class="s-row">
                     <span class="s-lbl">Mode</span>
-                    <button class="s-pill @(_engineMode == TranslationMode.Direct ? "active" : "")"
-                            disabled="@_isSwitching"
-                            @onclick='() => SetMode(TranslationMode.Direct)'>Direct</button>
                     <button class="s-pill @(_engineMode == TranslationMode.SttOpenAI ? "active" : "")"
                             disabled="@_isSwitching"
                             @onclick='() => SetMode(TranslationMode.SttOpenAI)'>STT+AI</button>
+                    <button class="s-pill @(_engineMode == TranslationMode.Direct ? "active" : "")"
+                            disabled="@_isSwitching"
+                            @onclick='() => SetMode(TranslationMode.Direct)'>Direct</button>
                 </div>
                 <div class="s-divider"></div>
                 <button class="s-action"
