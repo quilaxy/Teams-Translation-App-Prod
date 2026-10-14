@@ -56,7 +56,7 @@ namespace LiveTranslation.Engine
         // ── State (tidak berubah dari WinForms) ─────────────────────────
         private string          inputLang        = "id";
         private string          outputLang       = "ja";
-        private TranslationMode translationMode  = TranslationMode.Direct;
+        private TranslationMode translationMode  = TranslationMode.SttOpenAI;
         private List<string>    phrases          = new();
 
         private string   detectedLang        = "id";
