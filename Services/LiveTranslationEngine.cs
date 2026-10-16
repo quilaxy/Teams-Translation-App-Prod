@@ -1,24 +1,3 @@
-// ============================================================
-// PERUBAHAN DARI VERSI WINFORMS:
-//
-// 1. DIHAPUS: using NAudio.Wave + semua field captureA/captureB
-// 2. DIHAPUS: BuildAudioCapture() dan BuildMicrophoneCapture()
-//    → Audio sekarang datang dari bot via AudioStreamService,
-//      di-push langsung ke pushStreamA/pushStreamB
-//
-// 3. DIHAPUS: AudioInputSource enum (tidak relevan, sumber audio = bot)
-//
-// 4. DITAMBAH: konstruktor menerima IHubContext<TranslationHub>
-//
-// 5. DIGANTI: semua OnCaptionActive?.Invoke() / OnCaptionCommitted?.Invoke()
-//    → await _hub.Clients.Group(_meetingId).SendAsync(...)
-//
-// 6. DIGANTI: IConfiguration injection (bukan ConfigurationBuilder manual)
-//
-// 7. TETAP SAMA: semua logic STT, chunking, dedup, semantic boundary,
-//    TryForceCommitA/B, WireTranslationEvents, WireSttEvents, dll.
-// ============================================================
-
 using System;
 using System.Collections.Generic;
 using System.Threading;
@@ -88,6 +67,7 @@ namespace LiveTranslation.Engine
         private DateTime partialB_stableAt    = DateTime.MinValue;
         private string   partialB_committed   = "";
         private string   lastChunkedText      = "";
+        private string   utteranceCommittedText = ""; // gabungan SEMUA chunk yang sudah ter-commit di utterance ini (mode B)
         private string   lastCommittedSourceText = "";
         private readonly object lockB         = new();
         private System.Threading.Timer? chunkTimerB;
@@ -111,6 +91,9 @@ namespace LiveTranslation.Engine
         private const int    MinWords_B       = 4;
         private const double MaxAgeMs_B       = 2200;
         private const int    HardCapWords_B   = 12;
+        // false = caption "committed" hanya muncul saat STT final (1 segmen = 1 baris stabil).
+        // Partial tetap tampil dinamis di baris aktif. true = perilaku lama (commit potongan lebih awal).
+        private const bool   EnableEarlyChunkCommit = true;
         private const double ActiveDebounceMs = 300;
 
         private static readonly HashSet<string> SemanticBoundaryWords = new(
@@ -593,9 +576,12 @@ namespace LiveTranslation.Engine
 
                 string originalFull = e.Result.Text;
                 string chunked;
+                string committedAll;
                 lock (lockB)
                 {
                     chunked                 = lastChunkedText;
+                    committedAll            = utteranceCommittedText;
+                    utteranceCommittedText  = "";
                     partialB_last           = "";
                     partialB_committed      = "";
                     lastChunkedText         = "";
@@ -604,10 +590,18 @@ namespace LiveTranslation.Engine
 
                 Console.WriteLine($"[B] conf={conf:P0} full='{originalFull}' chunked='{chunked}'");
 
-                string remainder = StripChunkedPrefix(originalFull, chunked);
+                string remainder = StripCommittedPrefix(originalFull, committedAll, chunked);
 
+                // OPTIMASI: kirim hanya sisa (remainder) yang belum pernah di-commit sebagai chunk.
+                // Versi lama mengirim originalFull sehingga bagian yang sudah ter-commit
+                // diterjemahkan ulang (biaya ganda) dan bisa tampil dobel di caption.
                 if (translationMode == TranslationMode.SttOpenAI)
-                    OnFinalOriginal?.Invoke(originalFull);
+                {
+                    if (!string.IsNullOrWhiteSpace(remainder))
+                        OnFinalOriginal?.Invoke(remainder);
+                    else
+                        PushActive("");
+                }
 
                 FireOpenAiTranslate(
                     historyText: originalFull,
@@ -706,22 +700,22 @@ namespace LiveTranslation.Engine
                         shouldCommitChunk = true;
                         commitReason      = $"hard-cap({wc}w,quiet={quietMs:F0}ms)";
                     }
-                    else if (EndsAtSemanticBoundary(text) && wc >= 4 && stableMs >= 220)
+                    else if (EnableEarlyChunkCommit && EndsAtSemanticBoundary(text) && wc >= 4 && stableMs >= 220)
                     {
                         shouldCommitChunk = true;
                         commitReason      = $"semantic({wc}w,quiet={quietMs:F0}ms)";
                     }
-                    else if (stableMs >= StableMs_B && wc >= MinWords_B)
+                    else if (EnableEarlyChunkCommit && stableMs >= StableMs_B && wc >= MinWords_B)
                     {
                         shouldCommitChunk = true;
                         commitReason      = $"stable({stableMs:F0}ms,{wc}w)";
                     }
-                    else if (quietMs >= 1100 && stableMs >= 650 && wc >= 2)
+                    else if (EnableEarlyChunkCommit && quietMs >= 1100 && stableMs >= 650 && wc >= 2)
                     {
                         shouldCommitChunk = true;
                         commitReason      = $"long-pause({stableMs:F0}ms,quiet={quietMs:F0}ms,{wc}w)";
                     }
-                    else if (stableMs >= MaxAgeMs_B && wc >= MinWords_B)
+                    else if (EnableEarlyChunkCommit && stableMs >= MaxAgeMs_B && wc >= MinWords_B)
                     {
                         shouldCommitChunk = true;
                         commitReason      = $"max-age({stableMs:F0}ms,{wc}w)";
@@ -767,6 +761,7 @@ namespace LiveTranslation.Engine
                         partialB_committed      = chunkSnap;
                         lastChunkedText         = chunkSnap;
                         lastCommittedSourceText = chunkSnap;
+                        utteranceCommittedText  = (utteranceCommittedText + " " + chunkSnap).Trim();
 
                         if (partialB_last.StartsWith(chunkSnap, StringComparison.OrdinalIgnoreCase))
                         {
@@ -886,147 +881,14 @@ namespace LiveTranslation.Engine
             return Norm(a) == Norm(b);
         }
 
+        // OPTIMASI STT+AI: versi lama memanggil OpenAI di sini dengan dst=outputLang ("ja" default)
+        // lalu hasilnya dibuang (PushCommitted kosong, OnFinalQuality tanpa subscriber).
+        // Terjemahan sebenarnya dilakukan MeetingTranslationCoordinator per bahasa target user.
+        // Method dipertahankan sebagai no-op agar pemanggil tidak perlu diubah; tidak ada biaya OpenAI di sini.
+        // Pembersihan caption aktif ("ReceiveActive" kosong) sudah dikirim coordinator setelah committed.
         private void FireOpenAiTranslate(string historyText, string displayText, bool isChunked)
         {
-            var src = detectedLang != "" ? detectedLang : inputLang;
-            var dst = outputLang;
-            var effectiveDisplay = (string.IsNullOrWhiteSpace(displayText) && !isChunked)
-                ? historyText
-                : displayText;
-
-            var displayForAi = NormalizeDisfluenciesForAi(effectiveDisplay, src);
-            var historyForAi = NormalizeDisfluenciesForAi(historyText, src);
-
-            bool emitCommitted = !string.IsNullOrWhiteSpace(effectiveDisplay);
-            bool needTranslate = openAi != null && !IsSameLang(src, dst);
-
-            Console.WriteLine($"[FIRE] src={src} dst={dst} sameLang={IsSameLang(src, dst)} need={needTranslate} openAi={openAi != null} emit={emitCommitted} chunked={isChunked}");
-
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    string dispTrans = effectiveDisplay;
-                    if (emitCommitted && needTranslate)
-                    {
-                        var aiInput = string.IsNullOrWhiteSpace(displayForAi) ? effectiveDisplay : displayForAi;
-                        Console.WriteLine($"[FIRE→] disp: '{aiInput.Substring(0, Math.Min(50, aiInput.Length))}'");
-                        dispTrans = await openAi!.TranslateAsync(
-                            aiInput,
-                            src,
-                            dst,
-                            $"{_meetingId}|stt");
-                        dispTrans = EnsureNonEmptyTranslation(
-                            dispTrans,
-                            effectiveDisplay,
-                            ref lastGoodDisplayTrans,
-                            ref lastGoodDisplayTransAt);
-                        Console.WriteLine($"[FIRE←] disp: '{dispTrans.Substring(0, Math.Min(50, dispTrans.Length))}'");
-                    }
-
-                    string histTrans = historyText;
-                    if (needTranslate)
-                    {
-                        if (isChunked && emitCommitted
-                            && !string.IsNullOrWhiteSpace(dispTrans)
-                            && !IsSameLang(src, dst)
-                            && dispTrans != displayText)
-                        {
-                            histTrans = dispTrans;
-                        }
-                        else
-                        {
-                            var aiInputHist = string.IsNullOrWhiteSpace(historyForAi) ? historyText : historyForAi;
-                            Console.WriteLine($"[FIRE→] hist({(isChunked ? "chunk" : "full")}): src={src} dst={dst} '{aiInputHist.Substring(0, Math.Min(50, aiInputHist.Length))}'");
-                            histTrans = await openAi!.TranslateAsync(
-                                aiInputHist,
-                                src,
-                                dst,
-                                $"{_meetingId}|stt");
-                            histTrans = EnsureNonEmptyTranslation(
-                                histTrans,
-                                historyText,
-                                ref lastGoodHistoryTrans,
-                                ref lastGoodHistoryTransAt);
-                            Console.WriteLine($"[FIRE←] hist: '{histTrans.Substring(0, Math.Min(50, histTrans.Length))}'");
-                        }
-                    }
-
-                    if (IsSameLang(dst, "ja"))
-                    {
-                        if (emitCommitted && dispTrans != effectiveDisplay)
-                            dispTrans = LiveTranslation.AI.BusinessMeetingContext
-                                .Process(effectiveDisplay, dispTrans);
-                        if (histTrans != historyText)
-                            histTrans = LiveTranslation.AI.BusinessMeetingContext
-                                .Process(historyText, histTrans);
-                    }
-
-                    if (translationMode == TranslationMode.SttOpenAI && emitCommitted)
-                    {
-                        var isUntranslated = string.Equals(dispTrans.Trim(), effectiveDisplay.Trim(),
-                            StringComparison.OrdinalIgnoreCase);
-                        if (!isUntranslated)
-                        {
-                            Console.WriteLine($"[B→AI committed] '{dispTrans.Substring(0, Math.Min(60, dispTrans.Length))}'");
-                            PushCommitted(dispTrans);
-                        }
-                        else
-                        {
-                            Console.WriteLine($"[B→AI] Skipping untranslated committed (same as input)");
-                        }
-                        PushActive("");
-                    }
-
-                    var histIsUntranslated = string.Equals(histTrans.Trim(), historyText.Trim(),
-                        StringComparison.OrdinalIgnoreCase);
-                    if (isChunked)
-                    {
-                        Console.WriteLine($"[B→AI history] Skip chunk (waiting for full utterance)");
-                    }
-                    else if (!histIsUntranslated)
-                    {
-                        bool shouldSaveB = true;
-                        var currOrig = historyText.Trim().TrimEnd('.', '?', '!', '。', '？', '！', ',', '،');
-                        if (!string.IsNullOrWhiteSpace(lastHistoryOrigB))
-                        {
-                            var prevOrig = lastHistoryOrigB.TrimEnd('.', '?', '!', '。', '？', '！', ',', '،');
-                            var elapsed  = (DateTime.Now - lastHistoryOrigBAt).TotalSeconds;
-                            if (WordJaccard(currOrig, prevOrig) > 0.82 && elapsed < 8)
-                            {
-                                Console.WriteLine($"[B-history] WordJaccard skip sim={WordJaccard(currOrig, prevOrig):P0}");
-                                shouldSaveB = false;
-                            }
-                        }
-                        lastHistoryOrigB   = historyText.Trim();
-                        lastHistoryOrigBAt = DateTime.Now;
-
-                        if (shouldSaveB &&
-                            !ShouldSkipSimilarTranslation(
-                                histTrans,
-                                ref lastHistoryTransB,
-                                ref lastHistoryTransBAt))
-                        {
-                            Console.WriteLine($"[B→AI history] full trans='{histTrans.Substring(0, Math.Min(60, histTrans.Length))}'");
-                            OnFinalQuality?.Invoke(historyText, histTrans, false);
-                        }
-                    }
-                    else
-                    {
-                        Console.WriteLine($"[B→AI history] Skipping untranslated entry");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"[B→AI ERROR] {ex.GetType().Name}: {ex.Message}");
-                    if (translationMode == TranslationMode.SttOpenAI && emitCommitted)
-                    {
-                        PushCommitted(displayText);
-                        PushActive("");
-                    }
-                    OnFinalQuality?.Invoke(historyText, historyText, isChunked);
-                }
-            });
+            Console.WriteLine($"[FIRE] no-op (translation handled by coordinator) chunked={isChunked}");
         }
 
         // ── Semua helper methods berikut TIDAK BERUBAH sama sekali ───────
@@ -1044,7 +906,7 @@ namespace LiveTranslation.Engine
             lock (lockB)
             {
                 partialB_last = ""; partialB_stableAt = DateTime.MinValue;
-                partialB_committed = ""; lastChunkedText = "";
+                partialB_committed = ""; lastChunkedText = ""; utteranceCommittedText = "";
                 lastCommittedSourceText = ""; lastRecognizingAt = DateTime.MinValue;
                 activeDebounceText = ""; activeDebounceAt = DateTime.MinValue;
                 activeLastSent = "";
@@ -1129,6 +991,42 @@ namespace LiveTranslation.Engine
             }
             catch { }
             return 0.70;
+        }
+
+        // Buang SEMUA bagian yang sudah ter-commit sebagai chunk dari hasil final STT.
+        // Versi lama (StripChunkedPrefix) hanya mengenali chunk TERAKHIR, jadi kalau satu utterance
+        // sudah ter-commit >1 chunk, hasil final dikirim penuh lagi => duplikasi.
+        // Strategi: cocokkan N kata pertama final dengan N kata committed (toleran ~20% beda (min. 1 kata
+        // untuk n>=4) karena STT bisa merevisi kata), sisanya = remainder. Kalau tidak cocok, pakai logika lama.
+        private static string StripCommittedPrefix(string full, string committedAll, string lastChunk)
+        {
+            if (string.IsNullOrWhiteSpace(committedAll)) return full;
+
+            var fw = full.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            var cw = committedAll.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            int n  = cw.Length;
+
+            if (fw.Length >= n)
+            {
+                int same = 0;
+                for (int i = 0; i < n; i++)
+                    if (string.Equals(NormalizeWordForCompare(fw[i]), NormalizeWordForCompare(cw[i]),
+                            StringComparison.OrdinalIgnoreCase)) same++;
+
+                if (same >= n - (n >= 4 ? Math.Max(1, n / 5) : 0))
+                {
+                    var rem = string.Join(" ", fw.Skip(n)).Trim();
+                    return rem.Any(char.IsLetterOrDigit) ? rem : "";
+                }
+            }
+            else if (TextSimilarity(
+                         string.Join(" ", fw.Select(NormalizeWordForCompare)).ToLowerInvariant(),
+                         string.Join(" ", cw.Select(NormalizeWordForCompare)).ToLowerInvariant()) > 0.8)
+            {
+                return ""; // final lebih pendek dari yang sudah ter-commit & mirip: tidak ada yang baru
+            }
+
+            return StripChunkedPrefix(full, lastChunk);
         }
 
         private static string StripChunkedPrefix(string fullText, string chunked)
@@ -1373,9 +1271,10 @@ namespace LiveTranslation.Engine
             await StartAsync(_meetingId);
         }
 
-        public async Task SwitchOutputAsync(string lang)
+        public Task SwitchOutputAsync(string lang)
         {
             outputLang = lang;
+            return Task.CompletedTask;
         }
 
         // Mode switch does NOT restart recognizers: both run in parallel already;

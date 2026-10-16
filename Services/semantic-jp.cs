@@ -1,49 +1,31 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace LiveTranslation.AI
 {
-
+    // Optimasi semantic-jp:
+    // - Regex di-compile SEKALI (versi lama: 26x Regex.Replace statis per panggilan; cache regex .NET
+    //   hanya 15 pola, jadi pola terus dikompilasi ulang).
+    // - Batas kata memakai lookaround ASCII, bukan \b: di teks Jepang "APIを" / "Q1の" TIDAK dianggap
+    //   berbatas oleh \b (huruf Jepang termasuk \w), sehingga versi lama gagal mencocokkan.
+    // - Term hint untuk prompt kini DINAMIS: hanya istilah yang benar-benar ada di teks sumber, dan tanpa
+    //   pasangan identitas (EPMT=EPMT). Kebanyakan panggilan tidak menambah token sama sekali.
+    // - Pasca-proses (Process) sekarang dipanggil dari AITranslationEngine untuk target Jepang.
     public static class BusinessMeetingContext
     {
+        private const string Lb = @"(?<![A-Za-z0-9])";
+        private const string Rb = @"(?![A-Za-z0-9])";
+        private const RegexOptions Opt = RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase;
 
-        private static readonly (string Pattern, string Replacement)[] HardLocked =
-        {
-            (@"\bKPI\b",   "KPI"),
-            (@"\bROI\b",   "ROI"),
-            (@"\bSLA\b",   "SLA"),
-            (@"\bVPN\b",   "VPN"),
-            (@"\bISP\b",   "ISP"),
-            (@"\bAPI\b",   "API"),
-            (@"\bDNS\b",   "DNS"),
-            (@"\bHTTP\b",  "HTTP"),
-            (@"\bHTTPS\b", "HTTPS"),
-            (@"\bSSL\b",   "SSL"),
-            (@"\bIP\b",    "IP"),
-            (@"\bURL\b",   "URL"),
-            (@"\bCEO\b",   "CEO"),
-            (@"\bCTO\b",   "CTO"),
-            (@"\bCFO\b",   "CFO"),
-            (@"\bCOO\b",   "COO"),
-            (@"\bWBS\b",   "WBS"),
-            (@"\bEPMT\b",  "EPMT"),
-            (@"\bOKR\b",   "OKR"),
-            (@"\bSOP\b",   "SOP"),
-            (@"\bRACI\b",  "RACI"),
-            (@"\bRFP\b",   "RFP"),
-            (@"\bRFQ\b",   "RFQ"),
-            (@"\bPOC\b",   "POC"),
-            (@"\bUAT\b",   "UAT"),
-            (@"\bSIT\b",   "SIT"),
-        };
-
-        private static readonly Regex RxQuarter = new(@"\bQ([1-4])\b",
-            RegexOptions.Compiled | RegexOptions.CultureInvariant);
-        private static readonly Regex RxHalfYear = new(@"\b(H[12]|Half[\s-]?Year\s*[12]?|First Half|Second Half|1st Half|2nd Half)\b",
-            RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
-        private static readonly Regex RxFiscalYear = new(@"\bFY\s?(20\d{2}|\d{2})\b",
-            RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+        // Akronim yang harus tetap kapital. ("SIT" dibuang: kata Inggris "sit" ikut tertimpa bila IgnoreCase.)
+        private static readonly Regex RxAcronym = new(
+            Lb + "(KPI|ROI|SLA|VPN|ISP|API|DNS|HTTPS?|SSL|IP|URL|CEO|CTO|CFO|COO|WBS|EPMT|OKR|SOP|RACI|RFP|RFQ|POC|UAT)" + Rb, Opt);
+        private static readonly Regex RxQuarter    = new(Lb + "Q([1-4])" + Rb, Opt & ~RegexOptions.IgnoreCase);
+        private static readonly Regex RxHalfYear   = new(Lb + @"(H[12]|Half[\s-]?Year\s*[12]?|First Half|Second Half|1st Half|2nd Half)" + Rb, Opt);
+        private static readonly Regex RxFiscalYear = new(Lb + @"FY\s?(20\d{2}|\d{2})" + Rb, Opt);
 
         public static readonly IReadOnlyDictionary<string, string> CommonTerms =
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
@@ -107,6 +89,21 @@ namespace LiveTranslation.AI
             {"Runbook","運用手順書"}, {"Playbook","プレイブック"},
         };
 
+        // Hanya istilah yang BERUBAH saat diterjemahkan (identitas seperti EPMT=EPMT, Zoom=Zoom dibuang).
+        // RxGlossaryLoose: memindai teks SUMBER (untuk hint & penentuan istilah yang muncul).
+        // RxGlossary: dipakai pada KELUARAN; tidak mengganti istilah yang diapit kata Latin lain
+        // (mis. "Azure Update Manager") supaya nama produk tidak terpecah.
+        private static readonly string GlossaryKeys = string.Join("|",
+            CommonTerms
+                .Where(kv => !string.Equals(kv.Key, kv.Value, StringComparison.OrdinalIgnoreCase))
+                .Select(kv => kv.Key)
+                .OrderByDescending(k => k.Length)
+                .Select(Regex.Escape));
+
+        private static readonly Regex RxGlossaryLoose = new(Lb + "(" + GlossaryKeys + ")" + Rb, Opt);
+        private static readonly Regex RxGlossary = new(
+            @"(?<![A-Za-z0-9][ -])" + Lb + "(" + GlossaryKeys + ")" + Rb + @"(?![ -][A-Za-z0-9])", Opt);
+
         public enum MeetingContext
         {
             General,
@@ -136,18 +133,16 @@ namespace LiveTranslation.AI
             return MeetingContext.General;
         }
 
+        // Pasca-proses terjemahan Jepang: akronim, kuartal/semester/tahun fiskal, dan istilah glosarium
+        // yang MUNCUL di sumber tetapi dibiarkan berbahasa Latin oleh model.
         public static string Enrich(string translatedJP, MeetingContext context)
+            => Enrich(translatedJP, null);
+
+        public static string Enrich(string translatedJP, string? sourceText)
         {
             if (string.IsNullOrWhiteSpace(translatedJP)) return translatedJP;
 
-            var result = translatedJP;
-
-            foreach (var (pattern, replacement) in HardLocked)
-            {
-                result = Regex.Replace(result, pattern, replacement,
-                    RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-            }
-
+            var result = RxAcronym.Replace(translatedJP, m => m.Value.ToUpperInvariant());
             result = RxQuarter.Replace(result, m => $"第{m.Groups[1].Value}四半期");
             result = RxHalfYear.Replace(result, m =>
             {
@@ -163,47 +158,46 @@ namespace LiveTranslation.AI
                 return $"{y}年度";
             });
 
+            if (!string.IsNullOrWhiteSpace(sourceText))
+            {
+                var present = new HashSet<string>(
+                    RxGlossaryLoose.Matches(sourceText).Select(m => m.Value), StringComparer.OrdinalIgnoreCase);
+                if (present.Count > 0)
+                    result = RxGlossary.Replace(result, m =>
+                        present.Contains(m.Value) && CommonTerms.TryGetValue(m.Value, out var jp) ? jp : m.Value);
+            }
+
             return result.Trim();
         }
 
         public static string Process(string originalText, string translatedJP)
         {
-            var ctx      = Detect(originalText);
-            var enriched = Enrich(translatedJP, ctx);
+            var enriched = Enrich(translatedJP, originalText);
 
             if (enriched != translatedJP)
-                Console.WriteLine($"[SEMANTIC-JP] [{ctx}] term consistency applied");
+                Console.WriteLine("[SEMANTIC-JP] term consistency applied");
 
             return enriched;
         }
 
-        public static string GetTermHints(int maxTerms = 12)
+        // Hint untuk system prompt: hanya istilah yang ada di teks sumber (maks. maxTerms).
+        // Mengembalikan "" bila tidak ada, sehingga tidak ada token tambahan.
+        public static string GetTermHints(string? sourceText, int maxTerms = 8)
         {
-            var priority = new[]
-            {
-                "EPMT", "WBS", "Q1", "Q2", "H1", "H2", "FY",
-                "Machine Learning", "Deep Learning", "Data", "Security",
-                "Cloud", "Server", "Network", "Database", "System",
-                "Framework", "Training", "Testing", "Monitoring", "Backup",
-            };
+            if (string.IsNullOrWhiteSpace(sourceText)) return "";
 
-            var sb    = new System.Text.StringBuilder(" Preferred JP terms: ");
-            int count = 0;
-            foreach (var key in priority)
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var sb   = new StringBuilder();
+            foreach (Match m in RxGlossaryLoose.Matches(sourceText))
             {
-                if (count >= maxTerms) break;
-                if (CommonTerms.TryGetValue(key, out var val))
-                {
-                    sb.Append($"{key}={val}, ");
-                    count++;
-                }
+                if (seen.Count >= maxTerms) break;
+                if (!seen.Add(m.Value)) continue;
+                if (!CommonTerms.TryGetValue(m.Value, out var jp)) continue;
+                if (sb.Length > 0) sb.Append(", ");
+                sb.Append(m.Value).Append('=').Append(jp);
             }
 
-            if (sb.Length > 2 && sb[sb.Length - 2] == ',')
-                sb.Length -= 2;
-            sb.Append('.');
-
-            return count > 0 ? sb.ToString() : "";
+            return sb.Length == 0 ? "" : " JP terms: " + sb + ".";
         }
 
         private static bool ContainsAny(string text, params string[] terms)

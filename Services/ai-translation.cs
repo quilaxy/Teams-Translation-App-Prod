@@ -2,6 +2,13 @@
 // Konstruktor sekarang menerima IConfiguration via DI
 // (ganti ConfigurationBuilder manual yang pakai AppContext.BaseDirectory)
 // Semua logic lainnya TIDAK BERUBAH sama sekali.
+//
+// PATCH (gpt-5.4-nano):
+// - max_tokens -> max_completion_tokens (model GPT-5 menolak max_tokens)
+// - temperature / top_p dihapus
+// - api-version dinaikkan ke 2024-12-01-preview (lewat konstanta ApiVersion)
+// - Prompt dirombak: satu kerangka ringkas, anti-halusinasi semua bahasa, term hint Jepang dinamis
+// - Pasca-proses semantic-jp dipanggil untuk target Jepang; prompt retry memakai bahasa target yang benar
 
 using System;
 using System.Net.Http;
@@ -16,10 +23,53 @@ namespace LiveTranslation.AI
 {
     public class AITranslationEngine
     {
+        private const string ApiVersion = "2024-12-01-preview";
+        private const int MaxCompletionTokens = 1024;
+
         private readonly HttpClient httpClient;
         private readonly string endpoint;
         private readonly string apiKey;
         private readonly string deployment;
+        private readonly string? reasoningEffort;
+
+        private Dictionary<string, object> BuildRequest(string systemPrompt, string userText, bool stream = false)
+        {
+            var body = new Dictionary<string, object>
+            {
+                ["messages"] = new[]
+                {
+                    new { role = "system", content = systemPrompt },
+                    new { role = "user",   content = userText }
+                },
+                ["max_completion_tokens"] = MaxCompletionTokens
+            };
+            if (reasoningEffort != null) body["reasoning_effort"] = reasoningEffort;
+            if (stream)                  body["stream"] = true;
+            return body;
+        }
+
+        // Log ringkas untuk mengukur biaya/latensi nyata (reasoning tokens ditagih sebagai output).
+        private static void LogUsage(JsonElement root, long elapsedMs)
+        {
+            try
+            {
+                string finish = "?";
+                if (root.TryGetProperty("choices", out var ch) && ch.GetArrayLength() > 0 &&
+                    ch[0].TryGetProperty("finish_reason", out var fr))
+                    finish = fr.GetString() ?? "?";
+
+                int pt = 0, ct = 0, rt = 0;
+                if (root.TryGetProperty("usage", out var u))
+                {
+                    if (u.TryGetProperty("prompt_tokens", out var p)) pt = p.GetInt32();
+                    if (u.TryGetProperty("completion_tokens", out var c)) ct = c.GetInt32();
+                    if (u.TryGetProperty("completion_tokens_details", out var d) &&
+                        d.TryGetProperty("reasoning_tokens", out var r)) rt = r.GetInt32();
+                }
+                Console.WriteLine($"[AI-USAGE] ms={elapsedMs} in={pt} out={ct} reasoning={rt} finish={finish}");
+            }
+            catch { }
+        }
 
         private sealed class CacheEntry
         {
@@ -61,10 +111,16 @@ namespace LiveTranslation.AI
             deployment = config["AzureOpenAI:Deployment"]
                 ?? throw new Exception("AzureOpenAI:Deployment missing in appsettings.json");
 
+            // Opsional: env AzureOpenAI__ReasoningEffort (mis. "minimal" / "low").
+            // Kosong = tidak dikirim (aman). Nilai yang tidak didukung deployment -> HTTP 400,
+            // jadi uji dulu dengan curl sebelum mengisi.
+            var effort = config["AzureOpenAI:ReasoningEffort"];
+            reasoningEffort = string.IsNullOrWhiteSpace(effort) ? null : effort.Trim();
+
             httpClient = new HttpClient
             {
                 BaseAddress = new Uri(endpoint),
-                Timeout     = TimeSpan.FromSeconds(30)
+                Timeout     = TimeSpan.FromSeconds(10) // was 30: panggilan macet menahan antrean caption committed
             };
             httpClient.DefaultRequestHeaders.Add("api-key", apiKey);
             httpClient.DefaultRequestHeaders.Add("Accept-Charset", "utf-8");
@@ -74,8 +130,11 @@ namespace LiveTranslation.AI
 
         private bool IsCasual(string text)
         {
-            var lower = text.ToLower();
-            return casualIndicators.Count(w => lower.Contains(w)) >= 2;
+            // Cocokkan per kata utuh (sebelumnya substring: "lo" cocok di "color", "ya" di "saya").
+            var words = text.Split(
+                new[] { ' ', '\t', '\r', '\n', ',', '.', '?', '!', ';', ':' },
+                StringSplitOptions.RemoveEmptyEntries);
+            return words.Count(w => casualIndicators.Contains(w)) >= 2;
         }
 
         private static string NormLangKey(string lang) => lang.ToLowerInvariant() switch
@@ -106,24 +165,15 @@ namespace LiveTranslation.AI
 
             var casual = IsCasual(text);
 
-            var requestBody = new
-            {
-                messages = new[]
-                {
-                    new { role = "system", content = GetSystemPrompt(sourceLang, targetLang, casual) },
-                    new { role = "user",   content = text }
-                },
-                temperature = 0.2,
-                max_tokens  = 250,
-                top_p       = 0.85
-            };
+            var requestBody = BuildRequest(GetSystemPrompt(sourceLang, targetLang, casual, text), text);
 
             try
             {
+                var sw       = System.Diagnostics.Stopwatch.StartNew();
                 var json     = JsonSerializer.Serialize(requestBody);
                 var content  = new StringContent(json, Encoding.UTF8, "application/json");
                 var response = await httpClient.PostAsync(
-                    $"/openai/deployments/{deployment}/chat/completions?api-version=2024-08-01-preview",
+                    $"/openai/deployments/{deployment}/chat/completions?api-version={ApiVersion}",
                     content);
 
                 if (!response.IsSuccessStatusCode)
@@ -135,6 +185,7 @@ namespace LiveTranslation.AI
 
                 var responseJson = await response.Content.ReadAsStringAsync();
                 using var doc    = JsonDocument.Parse(responseJson);
+                LogUsage(doc.RootElement, sw.ElapsedMilliseconds);
 
                 var result = doc.RootElement
                     .GetProperty("choices")[0]
@@ -142,11 +193,14 @@ namespace LiveTranslation.AI
                     .GetProperty("content")
                     .GetString()?.Trim() ?? text;
 
-                if (IsRefusalResponse(result))
+                if (IsRefusalResponse(result, text))
                 {
                     Console.WriteLine($"[REFUSAL] Detected, retrying");
                     result = await RetryWithMinimalPromptAsync(text, targetLang);
                 }
+
+                if (IsJapanese(targetLang))
+                    result = LiveTranslation.AI.BusinessMeetingContext.Process(text, result);
 
                 var finalResult = NormalizeOrFallback(result, text, baseContextKey);
                 if (!string.IsNullOrWhiteSpace(finalResult))
@@ -182,23 +236,13 @@ namespace LiveTranslation.AI
 
             try
             {
-                var requestBody = new
-                {
-                    messages = new[]
-                    {
-                        new { role = "system", content = GetSystemPrompt(sourceLang, targetLang, casual) },
-                        new { role = "user",   content = text }
-                    },
-                    temperature = 0.2,
-                    max_tokens  = 250,
-                    top_p       = 0.85,
-                    stream      = true
-                };
+                var requestBody = BuildRequest(
+                    GetSystemPrompt(sourceLang, targetLang, casual, text), text, stream: true);
 
                 var json    = JsonSerializer.Serialize(requestBody);
                 var content = new StringContent(json, Encoding.UTF8, "application/json");
                 var request = new HttpRequestMessage(HttpMethod.Post,
-                    $"/openai/deployments/{deployment}/chat/completions?api-version=2024-08-01-preview")
+                    $"/openai/deployments/{deployment}/chat/completions?api-version={ApiVersion}")
                 { Content = content };
 
                 using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
@@ -231,7 +275,11 @@ namespace LiveTranslation.AI
                     catch { }
                 }
 
-                var finalResult = NormalizeOrFallback(fullResult.ToString().Trim(), text, baseContextKey);
+                var streamed = fullResult.ToString().Trim();
+                if (IsJapanese(targetLang))
+                    streamed = LiveTranslation.AI.BusinessMeetingContext.Process(text, streamed);
+
+                var finalResult = NormalizeOrFallback(streamed, text, baseContextKey);
                 if (!string.IsNullOrEmpty(finalResult))
                     CacheStore(cacheKey, finalResult);
 
@@ -244,185 +292,146 @@ namespace LiveTranslation.AI
             }
         }
 
-        private string GetSystemPrompt(string sourceLang, string targetLang, bool casual)
+        // ── Prompt (dioptimalkan) ────────────────────────────────────────────────
+        // Satu kerangka ringkas untuk SEMUA bahasa + satu baris gaya per bahasa.
+        // - Hemat token: ~100 token vs ~170-290 token sebelumnya (tergantung bahasa).
+        // - Anti-halusinasi untuk SEMUA bahasa: versi lama tidak punya aturan ini di 9 bahasa
+        //   (ms/th/vi/fil/km/my/lo/ta/ko) dan malah menyuruh "reconstruct ONE clean sentence".
+        // - Aturan khusus hanya muncul bila relevan (katakana hanya bila sumber Jepang, register
+        //   Indonesia informal hanya bila sumber Indonesia, term hint Jepang hanya bila ada istilahnya).
+        private static string LangKey(string? code)
         {
-            var fromJP = sourceLang is "jp" or "ja" or "ja-JP";
-            var toJP   = targetLang is "jp" or "ja" or "ja-JP";
-            var toID   = targetLang is "id" or "id-ID";
-            var toEN   = targetLang is "en" or "en-US";
-            var toMS    = targetLang is "ms" or "ms-MY";
-            var toTH    = targetLang is "th" or "th-TH";
-            var toVI    = targetLang is "vi" or "vi-VN";
-            var toFIL   = targetLang is "fil" or "fil-PH";
-            var toKM    = targetLang is "km" or "km-KH";
-            var toMY    = targetLang is "my" or "my-MM";
-            var toLO    = targetLang is "lo" or "lo-LA";
-            var toTA    = targetLang is "ta" or "ta-MY";
-            var toKO    = targetLang is "ko" or "ko-KR";
-            var fromKO  = sourceLang is "ko" or "ko-KR";
-
-            var register        = casual ? "Register: casual spoken Japanese (友達口調)." : "Register: polite professional Japanese (丁寧語).";
-            var noHallucination = " Do NOT add information not present in the source. ";
-            var disfluencyRule  = " Strip filler words (um, uh, え～、あの～" + (fromKO ? ", 음, 어" : "") + ") unless they carry meaning. ";
-            var informalIndoRule = " For informal Indonesian (nah, gitu, kok, sih, dong): clean up to natural spoken register while preserving meaning. ";
-            var noRefusal       = " Never refuse to translate. If input is unclear, produce the best possible natural translation. ";
-            var preserveNames   = " Preserve personal names, nicknames, place names, and brand names; do NOT translate or paraphrase them. ";
-            var noClarify       = " Do NOT ask questions or mention the input is unclear; always translate as best as possible. ";
-            var termHints       = LiveTranslation.AI.BusinessMeetingContext.GetTermHints();
-            string BuildAseanPrompt(string languageName, string languageStyle, string extraRule) =>
-                "You are a skilled live interpreter. " +
-                $"Render speech into natural spoken {languageName}. " +
-                $"Use clear, natural {languageStyle} as a professional speaker would say it — " +
-                "NOT like a translated document, NOT overly stiff or academic. " +
-                "Keep EN tech terms as-is (AI, API, Machine Learning, Cloud, Server, Data, System, Network, Database, dll). " +
-                "For fragmented or mid-sentence input: reconstruct ONE clean natural sentence. " +
-                "Strip filler words and disfluencies. " +
-                extraRule + preserveNames + noClarify +
-                "Never refuse to translate. " +
-                "If input is unclear, produce the best possible natural translation. " +
-                $"Output ONLY the {languageName} translation, nothing else.";
-
-            if (toJP)
-                return "You are a skilled live interpreter. " +
-                       "Render speech into natural spoken Japanese (丁寧な会話体). " +
-                        register + " " +
-                        "Tech/product names stay in EN or katakana: AI, API, Machine Learning, IoT, Cloud, Server, Gmail, Zoom. " +
-                        "For fragmented input: reconstruct ONE clean natural sentence. " +
-                        noHallucination + disfluencyRule + informalIndoRule + preserveNames + noClarify + noRefusal + termHints +
-                        " Output ONLY the Japanese translation, nothing else.";
-
-            if (fromJP && toID)
-                return "You are a skilled live interpreter. " +
-                       "Render Japanese speech into natural spoken Indonesian. " +
-                        "Use clear, natural Indonesian as a professional speaker would say it. " +
-                        "Keep EN tech terms as-is. Convert obvious katakana to EN/Indonesian equivalent. " +
-                        disfluencyRule + informalIndoRule + preserveNames + noClarify + noHallucination + noRefusal +
-                        "Output ONLY the Indonesian translation, nothing else.";
-
-            if (fromJP && toEN)
-                return "You are a skilled live interpreter. " +
-                       "Render Japanese speech into natural spoken English. " +
-                        "Contractions are fine. Convert katakana to EN equivalent. " +
-                        disfluencyRule + preserveNames + noClarify + noHallucination + noRefusal +
-                        "Output ONLY the English translation, nothing else.";
-
-            if (toID)
-                return "You are a skilled live interpreter. " +
-                       "Render speech into natural spoken Indonesian. " +
-                        "EN tech terms stay as-is. " +
-                        disfluencyRule + informalIndoRule + preserveNames + noClarify + noHallucination + noRefusal +
-                        "Output ONLY the Indonesian translation, nothing else.";
-
-            if (toEN)
-                return "You are a skilled live interpreter. " +
-                       "Render speech into natural spoken English. Contractions are fine. " +
-                        disfluencyRule + informalIndoRule + preserveNames + noClarify + noHallucination + noRefusal +
-                        "Output ONLY the English translation, nothing else.";
-
-            if (toMS)
-                return BuildAseanPrompt(
-                    "Melayu",
-                    "Melayu Malaysia formal",
-                    "Use formal pronouns naturally: \"kami\" for we, \"anda\" for formal you, and \"beliau\" for formal he/she. Strip Malay filler words such as lah, kan, eh, lor. ");
-
-            if (toTH)
-                return BuildAseanPrompt(
-                    "Thai",
-                    "Thai",
-                    "Use formal/polite Thai register (ครับ/ค่ะ). Output in Thai script, not romanization. Use common Thai transliteration for EN tech terms when natural, otherwise keep them in EN. ");
-
-            if (toVI)
-                return BuildAseanPrompt(
-                    "Vietnamese",
-                    "Vietnamese",
-                    "Use formal/professional Vietnamese with correct diacritics. EN tech terms may stay EN or use common Vietnamese equivalents such as phần mềm (software), dữ liệu (data). ");
-
-            if (toFIL)
-                return BuildAseanPrompt(
-                    "Filipino",
-                    "Filipino",
-                    "Use formal Filipino register. Professional Filipino code-switching with EN is acceptable and natural. ");
-
-            if (toKM)
-                return BuildAseanPrompt(
-                    "Khmer",
-                    "Khmer",
-                    "Use formal Khmer and output in Khmer script. EN tech terms may stay EN or use Khmer transliteration when natural. ");
-
-            if (toMY)
-                return BuildAseanPrompt(
-                    "Burmese",
-                    "Burmese",
-                    "Use formal Burmese and output in Myanmar script. Keep EN tech terms as-is when appropriate. ");
-
-            if (toLO)
-                return BuildAseanPrompt(
-                    "Lao",
-                    "Lao",
-                    "Use formal Lao and output in Lao script. Keep EN tech terms as-is when appropriate. ");
-
-            if (toTA)
-                return BuildAseanPrompt(
-                    "Tamil",
-                    "Tamil Malaysia/Singapura formal",
-                    "Use formal Tamil style suitable for Malaysia/Singapore and output in Tamil script. Keep EN tech terms as-is. ");
-
-            if (toKO)
-                return BuildAseanPrompt(
-                    "Korean",
-                    "Korean",
-                    "Use polite professional Korean suitable for business meetings (합니다/습니다 style). Output in Hangul only. EN tech terms may stay EN or use common Korean loanwords (e.g. 클라우드, 서버, 데이터). ");
-
-            return "You are a professional live interpreter. Translate naturally and accurately. " +
-                   disfluencyRule + informalIndoRule + preserveNames + noClarify + noHallucination + noRefusal +
-                   "Output ONLY the translation, nothing else.";
+            var c = (code ?? "").Trim().ToLowerInvariant();
+            var dash = c.IndexOf('-');
+            if (dash > 0) c = c.Substring(0, dash);
+            return c == "jp" ? "ja" : c;
         }
 
-        private static bool IsRefusalResponse(string text)
+        private static string LangName(string? code) => LangKey(code) switch
         {
-            if (string.IsNullOrWhiteSpace(text)) return false;
-            var normalized = text.ToLowerInvariant();
-            return text.Contains("申し訳ありません", StringComparison.Ordinal) ||
-                   text.Contains("翻訳できません", StringComparison.Ordinal) ||
-                   text.Contains("번역할 수 없", StringComparison.Ordinal) ||
-                   normalized.Contains("i'm sorry") || normalized.Contains("i cannot translate") ||
-                   normalized.Contains("cannot translate") || normalized.Contains("can't translate") ||
-                   normalized.Contains("maaf, saya tidak") || normalized.Contains("saya tidak dapat menerjemahkan") ||
-                   normalized.Contains("tidak jelas") || normalized.Contains("sulit dipahami") ||
-                   normalized.Contains("bisa tolong diperjelas") || normalized.Contains("tolong diperjelas") ||
-                   normalized.Contains("mohon diperjelas") || normalized.Contains("ditulis ulang") ||
-                   normalized.Contains("disampaikan ulang") || normalized.Contains("could you clarify") ||
-                   normalized.Contains("please clarify") || normalized.Contains("not clear") ||
-                   normalized.Contains("unclear") || normalized.Contains("hard to understand");
+            "en" => "English",   "id" => "Indonesian", "ja" => "Japanese", "ko" => "Korean",
+            "ms" => "Malay",     "th" => "Thai",       "vi" => "Vietnamese", "fil" => "Filipino",
+            "km" => "Khmer",     "my" => "Burmese",    "lo" => "Lao",      "ta" => "Tamil",
+            _ => "English"
+        };
+
+        private static bool IsJapanese(string? code) => LangKey(code) == "ja";
+
+        private static string LangStyle(string? code, bool casual) => LangKey(code) switch
+        {
+            "en"  => "Natural spoken English; contractions are fine.",
+            "id"  => "Natural spoken Indonesian, clear and professional, never stiff.",
+            "ja"  => casual
+                ? "Casual spoken Japanese (友達口調), natural and relaxed. Drop subjects/pronouns when clear."
+                : "Natural polite spoken Japanese (です・ます調) as a Japanese businessperson would say it: drop subjects/pronouns when clear, avoid 直訳調 and over-stiff keigo. Product/tech names stay in EN or katakana.",
+            "ms"  => "Natural formal Malaysian Malay (kami, anda, beliau); drop lah, kan, eh, lor.",
+            "th"  => "Natural polite spoken Thai (ครับ/ค่ะ) in Thai script, no romanization; omit pronouns where Thai would.",
+            "vi"  => "Natural professional spoken Vietnamese with correct diacritics, not textbook-stiff.",
+            "fil" => "Natural professional Filipino; EN code-switching is fine.",
+            "km"  => "Natural formal spoken Khmer in Khmer script.",
+            "my"  => "Natural formal spoken Burmese in Myanmar script.",
+            "lo"  => "Natural formal spoken Lao in Lao script.",
+            "ta"  => "Natural formal spoken Tamil (Malaysia/Singapore style) in Tamil script.",
+            "ko"  => "Natural polite spoken Korean (합니다/습니다) in Hangul only; drop subjects when clear.",
+            _     => ""
+        };
+
+        private static string GetSystemPrompt(string sourceLang, string targetLang, bool casual, string sourceText = "")
+        {
+            var src = LangKey(sourceLang);
+            var tgt = LangKey(targetLang);
+
+            var fillers = src == "ja" ? "えー, あの"
+                        : src == "ko" ? "음, 어"
+                        : "um, uh, eh";
+
+            var sb = new StringBuilder(480);
+            sb.Append("You are a live interpreter for business meetings. Translate the user's message into ")
+              .Append(LangName(targetLang))
+              // Utamakan makna & kewajaran, bukan kata-per-kata (hasil "kaku" = terjemahan harfiah).
+              .Append(", conveying the meaning the way a native speaker would naturally say it: idiomatic spoken style, ")
+              .Append("not word-for-word and not like a translated document. ")
+              .Append(LangStyle(targetLang, casual))
+              // Anti-halusinasi tanpa membuat hasil harfiah: larang menambah FAKTA, bukan menata ulang kalimat.
+              .Append(" Add no facts, names or numbers that are not in the source; if the input is cut off, leave it unfinished instead of guessing the ending.")
+              .Append(" Drop fillers (").Append(fillers).Append(").")
+              .Append(" Keep personal, place and brand names unchanged; EN tech terms (AI, API, Cloud, Server) stay as-is or use their common local form.");
+
+            if (src == "ja")
+                sb.Append(" Convert katakana loanwords to their original term.");
+
+            // Register informal Indonesia hanya relevan bila sumbernya Indonesia (atau belum diketahui).
+            if (src == "id" || src == "" || src == "auto")
+                sb.Append(" Informal Indonesian (nah, gitu, kok, sih, dong): use natural register, keep the meaning.");
+
+            if (tgt == "ja")
+                sb.Append(LiveTranslation.AI.BusinessMeetingContext.GetTermHints(sourceText));
+
+            sb.Append(" Never refuse, ask questions or comment; if unclear, translate what is there naturally without guessing.")
+              .Append(" Output ONLY the translation.");
+
+            return sb.ToString();
+        }
+
+        // Deteksi penolakan/penjelasan model (bukan terjemahan). Versi lama terlalu luas:
+        // frasa seperti "unclear", "tidak jelas", "i'm sorry" juga muncul di terjemahan yang SAH
+        // (mis. sumber "Maaf, saya terlambat" -> "I'm sorry, I'm late"), sehingga memicu retry
+        // (= panggilan API tambahan) dan bisa menimpa hasil yang benar dengan teks sumber.
+        // Sekarang penanda hanya dihitung bila TIDAK ada di teks sumber.
+        private static bool IsRefusalResponse(string result, string source)
+        {
+            if (string.IsNullOrWhiteSpace(result)) return false;
+            var r = result.ToLowerInvariant();
+            var s = (source ?? "").ToLowerInvariant();
+
+            // 1) Penolakan eksplisit
+            string[] refusal =
+            {
+                "i cannot translate", "cannot translate", "can't translate",
+                "saya tidak dapat menerjemahkan", "翻訳できません", "번역할 수 없"
+            };
+            foreach (var m in refusal)
+                if (r.Contains(m) && !s.Contains(m)) return true;
+
+            // 2) Model balik bertanya / minta klarifikasi
+            string[] clarify =
+            {
+                "could you clarify", "please clarify", "bisa tolong diperjelas", "tolong diperjelas",
+                "mohon diperjelas", "ditulis ulang", "disampaikan ulang"
+            };
+            foreach (var m in clarify)
+                if (r.Contains(m) && !s.Contains(m)) return true;
+
+            // 3) Permintaan maaf: sah jika pembicara memang minta maaf
+            string[] apology = { "i'm sorry", "maaf, saya tidak", "申し訳ありません" };
+            string[] apologyInSource = { "maaf", "sorry", "apolog", "すみません", "申し訳", "ごめん", "죄송", "미안" };
+            if (apology.Any(m => r.Contains(m)) && !apologyInSource.Any(m => s.Contains(m)))
+                return true;
+
+            // 4) Penanda lemah: hanya dianggap penolakan bila keluaran jauh lebih panjang
+            //    dari sumber (indikasi penjelasan, bukan terjemahan)
+            string[] weak = { "tidak jelas", "sulit dipahami", "not clear", "unclear", "hard to understand" };
+            if (weak.Any(m => r.Contains(m) && !s.Contains(m)) &&
+                result.Length > s.Length * 2 + 30)
+                return true;
+
+            return false;
         }
 
         private async Task<string> RetryWithMinimalPromptAsync(string originalText, string targetLang)
         {
-            var toJP = targetLang is "jp" or "ja-JP";
-            var minimalPrompt = toJP
-                ? "Translate to Japanese. Output ONLY the translation, nothing else."
-                : targetLang is "id" or "id-ID"
-                    ? "Translate to Indonesian. Output ONLY the translation, nothing else."
-                    : targetLang is "ko" or "ko-KR"
-                        ? "Translate to Korean. Output ONLY the translation, nothing else."
-                        : "Translate to English. Output ONLY the translation, nothing else.";
+            // Bug lama: cek bahasa hanya "jp"/"ja-JP" (kode "ja" tidak cocok) dan semua bahasa selain
+            // id/ko jatuh ke "Translate to English". Sekarang memakai nama bahasa target yang benar.
+            var minimalPrompt = $"Translate to natural spoken {LangName(targetLang)}, not word-for-word. Add nothing. Output ONLY the translation.";
 
-            var requestBody = new
-            {
-                messages = new[]
-                {
-                    new { role = "system", content = minimalPrompt },
-                    new { role = "user",   content = originalText }
-                },
-                temperature = 0.1, max_tokens = 250, top_p = 0.8
-            };
+            var requestBody = BuildRequest(minimalPrompt, originalText);
 
             try
             {
                 var json     = JsonSerializer.Serialize(requestBody);
                 var content  = new StringContent(json, Encoding.UTF8, "application/json");
                 var response = await httpClient.PostAsync(
-                    $"/openai/deployments/{deployment}/chat/completions?api-version=2024-08-01-preview",
+                    $"/openai/deployments/{deployment}/chat/completions?api-version={ApiVersion}",
                     content);
                 if (!response.IsSuccessStatusCode) return originalText;
 
@@ -432,7 +441,7 @@ namespace LiveTranslation.AI
                     .GetProperty("choices")[0].GetProperty("message").GetProperty("content")
                     .GetString()?.Trim() ?? originalText;
 
-                return IsRefusalResponse(result) ? originalText : result;
+                return IsRefusalResponse(result, originalText) ? originalText : result;
             }
             catch { return originalText; }
         }
@@ -449,12 +458,20 @@ namespace LiveTranslation.AI
         private static string BuildBaseContextKey(string sourceLang, string targetLang, string contextKey)
             => $"{NormLangKey(sourceLang)}→{NormLangKey(targetLang)}|{contextKey}";
 
+        // Terjemahan adalah fungsi murni dari (bahasa sumber, bahasa target, teks). Jenis konteks
+        // ("meeting|active" vs "meeting|committed") TIDAK boleh membedakan cache: dulu teks yang baru
+        // saja diterjemahkan sebagai partial diterjemahkan ULANG saat di-commit (biaya + latensi ganda).
+        // Konteks tetap dipakai untuk fallback "last success" (BuildBaseContextKey), bukan untuk cache ini.
         private static string BuildCacheKey(string sourceLang, string targetLang, string contextKey, string text)
-            => $"{BuildBaseContextKey(sourceLang, targetLang, contextKey)}|{NormalizeCacheText(text)}";
+        {
+            var idx   = contextKey.LastIndexOf('|');
+            var scope = idx > 0 ? contextKey.Substring(0, idx) : contextKey;
+            return $"{NormLangKey(sourceLang)}→{NormLangKey(targetLang)}|{scope}|{NormalizeCacheText(text)}";
+        }
 
         private static string NormalizeCacheText(string text)
             => string.Join(" ",
-                (text ?? "").Trim().Split(new[] { ' ', '\t', '\r', '\n' },
+                (text ?? "").Trim().TrimEnd('.', ',', ';', ':', '!', '?', '。', '、', '！', '？', '…').Split(new[] { ' ', '\t', '\r', '\n' },
                     StringSplitOptions.RemoveEmptyEntries))
                 .ToLowerInvariant();
 

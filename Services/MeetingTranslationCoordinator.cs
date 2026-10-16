@@ -19,6 +19,10 @@ namespace Teams_Translation_App.Services
         private readonly ConcurrentDictionary<string, ConnectionPreference> _preferences = new();
         private readonly SemaphoreSlim _dispatchLock = new(1, 1);
         private readonly ConcurrentDictionary<string, TranslationDispatchState> _committedHistory = new();
+        // Terjemahan partial (baris aktif): maks. 1 panggilan OpenAI berjalan per (meeting, bahasa target).
+        private readonly ConcurrentDictionary<string, ActiveTranslateState> _activeStates = new();
+        // Naik setiap ada commit; hasil partial yang dimulai sebelum commit dibuang (mencegah teks hantu).
+        private readonly ConcurrentDictionary<string, int> _commitEpochs = new();
 
         public MeetingTranslationCoordinator(
             LiveTranslationEngine engine,
@@ -139,6 +143,8 @@ namespace Teams_Translation_App.Services
         private void HandleSourceCommitted(string sourceText)
         {
             if (string.IsNullOrWhiteSpace(sourceText)) return;
+            var committedMeetingId = _engine.CurrentMeetingId;
+            if (!string.IsNullOrWhiteSpace(committedMeetingId)) BumpEpoch(committedMeetingId);
             _ = Task.Run(async () =>
             {
                 try
@@ -207,25 +213,15 @@ namespace Teams_Translation_App.Services
                 }
                 else
                 {
-                    try
+                    var src = CurrentSourceLang();
+                    if (!IsSameLanguage(src, group.TargetLang))
                     {
-                        var src = NormalizeLanguage(
-                            _engine.DetectedLang,
-                            NormalizeLanguage(_engine.InputLang, DefaultInputLang));
-                        activeText = IsSameLanguage(src, group.TargetLang)
-                            ? sourceText
-                            : await _ai.TranslateAsync(
-                                sourceText,
-                                src,
-                                group.TargetLang,
-                                $"{meetingId}|active");
-                        if (string.IsNullOrWhiteSpace(activeText))
-                            activeText = sourceText;
+                        // Kirim ke antrean "latest wins": tidak ada panggilan menumpuk saat API lebih
+                        // lambat dari tick partial (300 ms). Hasil dikirim oleh worker itu sendiri.
+                        await TranslateActiveCoalescedAsync(meetingId, group.TargetLang, sourceText);
+                        return;
                     }
-                    catch
-                    {
-                        activeText = sourceText;
-                    }
+                    activeText = sourceText;
                 }
 
                 var activeConnections = group.ConnectionIds
@@ -602,6 +598,90 @@ namespace Teams_Translation_App.Services
             return false;
         }
 
+        // ── Partial translation: coalescing + guard epoch ────────────────────────
+        private int GetEpoch(string meetingId) => _commitEpochs.TryGetValue(meetingId, out var e) ? e : 0;
+        private void BumpEpoch(string meetingId) => _commitEpochs.AddOrUpdate(meetingId, 1, (_, v) => v + 1);
+
+        private string CurrentSourceLang() => NormalizeLanguage(
+            _engine.DetectedLang,
+            NormalizeLanguage(_engine.InputLang, DefaultInputLang));
+
+        private List<string> GetGroupConnections(string meetingId, string targetLang)
+            => _preferences
+                .Where(kv => kv.Value.MeetingId == meetingId &&
+                             string.Equals(NormalizeLanguage(kv.Value.OutputLang, DefaultOutputLang),
+                                           targetLang, StringComparison.OrdinalIgnoreCase))
+                .Select(kv => kv.Key)
+                .ToList();
+
+        private async Task TranslateActiveCoalescedAsync(string meetingId, string targetLang, string firstText)
+        {
+            var state = _activeStates.GetOrAdd($"{meetingId}|{targetLang}", _ => new ActiveTranslateState());
+            var epoch = GetEpoch(meetingId);
+
+            lock (state.Gate)
+            {
+                if (state.Busy)
+                {
+                    state.PendingText  = firstText;   // timpa: hanya teks TERBARU yang penting
+                    state.PendingEpoch = epoch;
+                    return;
+                }
+                state.Busy = true;
+            }
+
+            var text = firstText;
+            try
+            {
+                while (true)
+                {
+                    string activeText;
+                    try
+                    {
+                        var src = CurrentSourceLang();
+                        activeText = IsSameLanguage(src, targetLang)
+                            ? text
+                            : await _ai.TranslateAsync(text, src, targetLang, $"{meetingId}|active");
+                        if (string.IsNullOrWhiteSpace(activeText)) activeText = text;
+                    }
+                    catch
+                    {
+                        activeText = text;
+                    }
+
+                    // Buang hasil jika sudah ada commit setelah teks ini diminta.
+                    if (epoch == GetEpoch(meetingId))
+                    {
+                        var conns = GetGroupConnections(meetingId, targetLang);
+                        if (conns.Count > 0)
+                            await _hub.Clients.Clients(conns).SendAsync("ReceiveActive", activeText);
+                    }
+
+                    // Ambil teks pending TERBARU bila masih berlaku (belum ada commit sesudahnya).
+                    lock (state.Gate)
+                    {
+                        if (state.PendingText is not null && state.PendingEpoch == GetEpoch(meetingId))
+                        {
+                            text  = state.PendingText;
+                            epoch = state.PendingEpoch;
+                            state.PendingText = null;
+                        }
+                        else
+                        {
+                            state.PendingText = null;
+                            state.Busy = false;
+                            return;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[COORD] Active translation worker failed");
+                lock (state.Gate) { state.Busy = false; state.PendingText = null; }
+            }
+        }
+
         public void Dispose()
         {
             _engine.OnFinalOriginal -= HandleSourceCommitted;
@@ -616,6 +696,14 @@ namespace Teams_Translation_App.Services
             public string InputLang { get; set; } = DefaultInputLang;
             public string OutputLang { get; set; } = DefaultOutputLang;
             public DateTime LastInputChangedUtc { get; set; } = DateTime.UtcNow;
+        }
+
+        private sealed class ActiveTranslateState
+        {
+            public readonly object Gate = new();
+            public bool Busy;
+            public string? PendingText;
+            public int PendingEpoch;
         }
 
         private sealed class TranslationDispatchState
