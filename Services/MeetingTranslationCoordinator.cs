@@ -75,6 +75,12 @@ namespace Teams_Translation_App.Services
         public Task SetInputLanguageAsync(string connectionId, string lang)
         {
             var safeLang = NormalizeLanguage(lang, DefaultInputLang);
+            if (!TranslationDefaults.IsSupported(safeLang))
+            {
+                _logger.LogWarning("[COORD] Unsupported input language '{Lang}' from {ConnectionId}; using default '{Default}'",
+                    lang, connectionId, DefaultInputLang);
+                safeLang = DefaultInputLang;
+            }
             if (_preferences.TryGetValue(connectionId, out var pref))
             {
                 pref.InputLang = safeLang;
@@ -87,6 +93,12 @@ namespace Teams_Translation_App.Services
         public Task SetOutputLanguageAsync(string connectionId, string lang)
         {
             var safeLang = NormalizeLanguage(lang, DefaultOutputLang);
+            if (!TranslationDefaults.IsSupported(safeLang))
+            {
+                _logger.LogWarning("[COORD] Unsupported output language '{Lang}' from {ConnectionId}; using default '{Default}'",
+                    lang, connectionId, DefaultOutputLang);
+                safeLang = DefaultOutputLang;
+            }
             if (_preferences.TryGetValue(connectionId, out var pref))
                 pref.OutputLang = safeLang;
             return Task.CompletedTask;
@@ -288,8 +300,7 @@ namespace Teams_Translation_App.Services
 
                 if (recipients.Count == 0) return;
 
-                var fallbackLang = NormalizeLanguage(_engine.InputLang, DefaultInputLang);
-                var sourceLang = NormalizeLanguage(_engine.DetectedLang, fallbackLang);
+                var sourceLang = NormalizeLanguage(_engine.InputLang, DefaultInputLang);
                 var dispatchTasks = recipients
                     .Select(group => DispatchToLanguageGroupAsync(
                         sourceText,
@@ -417,15 +428,17 @@ namespace Teams_Translation_App.Services
         {
             "id" => "Menerjemahkan...",
             "ja" => "翻訳中...",
-            "ko" => "번역 중...",
-            "ms" => "Menterjemah...",
-            "th" => "กำลังแปล...",
-            "vi" => "Đang dịch...",
-            "fil" => "Nagsasalin...",
-            "km" => "កំពុងបកប្រែ...",
-            "my" => "ဘာသာပြန်နေသည်...",
-            "lo" => "ກໍາລັງແປ...",
-            "ta" => "மொழிபெயர்க்கிறது...",
+            // [FUTURE-LANG] Bahasa lain di-comment sementara (hanya id/en/ja yang aktif).
+            // Un-comment baris terkait untuk mengaktifkan lagi (lihat NOTICE di TranslationDefaults.cs).
+            // "ko" => "번역 중...",
+            // "ms" => "Menterjemah...",
+            // "th" => "กำลังแปล...",
+            // "vi" => "Đang dịch...",
+            // "fil" => "Nagsasalin...",
+            // "km" => "កំពុងបកប្រែ...",
+            // "my" => "ဘာသာပြန်နေသည်...",
+            // "lo" => "ກໍາລັງແປ...",
+            // "ta" => "மொழிபெயர்க்கிறது...",
             _ => "Translating..."
         };
 
@@ -602,9 +615,7 @@ namespace Teams_Translation_App.Services
         private int GetEpoch(string meetingId) => _commitEpochs.TryGetValue(meetingId, out var e) ? e : 0;
         private void BumpEpoch(string meetingId) => _commitEpochs.AddOrUpdate(meetingId, 1, (_, v) => v + 1);
 
-        private string CurrentSourceLang() => NormalizeLanguage(
-            _engine.DetectedLang,
-            NormalizeLanguage(_engine.InputLang, DefaultInputLang));
+        private string CurrentSourceLang() => NormalizeLanguage(_engine.InputLang, DefaultInputLang);
 
         private List<string> GetGroupConnections(string meetingId, string targetLang)
             => _preferences

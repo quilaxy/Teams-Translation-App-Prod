@@ -8,6 +8,7 @@ using Microsoft.CognitiveServices.Speech.Translation;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Configuration;
 using Teams_Translation_App.Hubs;
+using TranslationDefaults = Teams_Translation_App.Services.TranslationDefaults;
 
 namespace LiveTranslation.Engine
 {
@@ -33,12 +34,11 @@ namespace LiveTranslation.Engine
         private LiveTranslation.AI.AITranslationEngine? openAi;
 
         // ── State (tidak berubah dari WinForms) ─────────────────────────
-        private string          inputLang        = "id";
-        private string          outputLang       = "ja";
+        private string          inputLang        = TranslationDefaults.DefaultInputLanguage;
+        private string          outputLang       = TranslationDefaults.DefaultOutputLanguage;
         private TranslationMode translationMode  = TranslationMode.SttOpenAI;
         private List<string>    phrases          = new();
 
-        private string   detectedLang        = "id";
         private readonly object dedupA        = new();
         private readonly object dedupB        = new();
         private string   lastFinalTransOrig   = "";
@@ -112,7 +112,6 @@ namespace LiveTranslation.Engine
         // untuk logging, storage history, dll.
         public event Action<string>?                    OnFinalOriginal;
         public event Action<string, string, bool>?      OnFinalQuality;
-        public event Action<string>?                    OnLanguageDetected;
         public event Action<string>?                    OnError;
         public event Action?                            OnSilenceDetected;
         public event Action<IReadOnlyDictionary<string, string>?, string>? OnActiveSource;
@@ -120,7 +119,6 @@ namespace LiveTranslation.Engine
 
         public bool            IsRunning          { get; private set; }
         public string          TranslationModeStr => translationMode == TranslationMode.SttOpenAI ? "STT+OpenAI" : "Direct";
-        public string          DetectedLang       => detectedLang;
         public string          InputLang          => inputLang;
         public string          OutputLang         => outputLang;
         public string          CurrentMeetingId   => _meetingId;
@@ -184,21 +182,21 @@ namespace LiveTranslation.Engine
             audioConfigB = AudioConfig.FromStreamInput(pushStreamB);
 
             transConfig = SpeechTranslationConfig.FromSubscription(key, region);
-            transConfig.SpeechRecognitionLanguage =
-                inputLang == "auto" ? "id-ID" : ToSdkLang(inputLang);
-            if (inputLang != "auto") detectedLang = inputLang;
+            transConfig.SpeechRecognitionLanguage = ToSdkLang(inputLang);
             transConfig.AddTargetLanguage("id");
             transConfig.AddTargetLanguage("en");
             transConfig.AddTargetLanguage("ja");
-            transConfig.AddTargetLanguage("ko");
-            transConfig.AddTargetLanguage("ms");
-            transConfig.AddTargetLanguage("th");
-            transConfig.AddTargetLanguage("vi");
-            transConfig.AddTargetLanguage("fil");
-            transConfig.AddTargetLanguage("km");
-            transConfig.AddTargetLanguage("my");
-            transConfig.AddTargetLanguage("lo");
-            transConfig.AddTargetLanguage("ta");
+            // [FUTURE-LANG] Target bahasa lain di-comment sementara (hanya id/en/ja yang aktif).
+            // Un-comment baris terkait untuk mengaktifkan lagi (lihat NOTICE di TranslationDefaults.cs).
+            // transConfig.AddTargetLanguage("ko");
+            // transConfig.AddTargetLanguage("ms");
+            // transConfig.AddTargetLanguage("th");
+            // transConfig.AddTargetLanguage("vi");
+            // transConfig.AddTargetLanguage("fil");
+            // transConfig.AddTargetLanguage("km");
+            // transConfig.AddTargetLanguage("my");
+            // transConfig.AddTargetLanguage("lo");
+            // transConfig.AddTargetLanguage("ta");
             transConfig.SetProperty(
                 PropertyId.SpeechServiceConnection_EndSilenceTimeoutMs, "380");
             transConfig.SetProperty(
@@ -209,13 +207,7 @@ namespace LiveTranslation.Engine
                 PropertyId.SpeechServiceResponse_PostProcessingOption, "TrueText");
             transConfig.SetProfanity(ProfanityOption.Masked);
 
-            var autoDetectLanguages = BuildAutoDetectLanguages(inputLang);
-
-            transRecognizer = inputLang == "auto"
-                ? new TranslationRecognizer(transConfig,
-                    AutoDetectSourceLanguageConfig.FromLanguages(
-                        autoDetectLanguages), audioConfigA)
-                : new TranslationRecognizer(transConfig, audioConfigA);
+            transRecognizer = new TranslationRecognizer(transConfig, audioConfigA);
 
             if (phrases.Count > 0)
             {
@@ -239,17 +231,8 @@ namespace LiveTranslation.Engine
                 PropertyId.SpeechServiceConnection_LanguageIdMode, "Continuous"); }
             catch { }
 
-            if (inputLang == "auto")
-            {
-                sttRecognizer = new SpeechRecognizer(sttConfig,
-                    AutoDetectSourceLanguageConfig.FromLanguages(
-                        autoDetectLanguages), audioConfigB);
-            }
-            else
-            {
-                sttConfig.SpeechRecognitionLanguage = ToSdkLang(inputLang);
-                sttRecognizer = new SpeechRecognizer(sttConfig, audioConfigB);
-            }
+            sttConfig.SpeechRecognitionLanguage = ToSdkLang(inputLang);
+            sttRecognizer = new SpeechRecognizer(sttConfig, audioConfigB);
 
             if (phrases.Count > 0)
             {
@@ -354,7 +337,6 @@ namespace LiveTranslation.Engine
             {
                 if (e.Result.Reason != ResultReason.TranslatingSpeech) return;
                 lastActivityTime = DateTime.Now;
-                TryDetectLangFromTrans(e.Result);
                 _lastPartialTranslations = e.Result.Translations;
 
                 var liveOriginal = e.Result.Text ?? "";
@@ -409,7 +391,6 @@ namespace LiveTranslation.Engine
                     lastFinalTransTime = DateTime.Now;
                 }
 
-                TryDetectLangFromTrans(e.Result);
                 lastActivityTime = DateTime.Now;
 
                 string chunkedA, chunkedOrigA, lastActiveA;
@@ -522,24 +503,6 @@ namespace LiveTranslation.Engine
                         activeDebounceText = e.Result.Text;
                         activeDebounceAt   = DateTime.Now;
                     }
-                }
-
-                if (inputLang == "auto")
-                {
-                    try
-                    {
-                        var ar = AutoDetectSourceLanguageResult.FromResult(e.Result);
-                        if (!string.IsNullOrEmpty(ar?.Language))
-                        {
-                            var norm = NormLang(ar.Language);
-                            if (norm != detectedLang)
-                            {
-                                detectedLang = norm;
-                                OnLanguageDetected?.Invoke(norm);
-                            }
-                        }
-                    }
-                    catch { }
                 }
             };
 
@@ -881,7 +844,7 @@ namespace LiveTranslation.Engine
             return Norm(a) == Norm(b);
         }
 
-        // OPTIMASI STT+AI: versi lama memanggil OpenAI di sini dengan dst=outputLang ("ja" default)
+        // OPTIMASI STT+AI: versi lama memanggil OpenAI di sini dengan dst=outputLang (dulu default "ja")
         // lalu hasilnya dibuang (PushCommitted kosong, OnFinalQuality tanpa subscriber).
         // Terjemahan sebenarnya dilakukan MeetingTranslationCoordinator per bahasa target user.
         // Method dipertahankan sebagai no-op agar pemanggil tidak perlu diubah; tidak ada biaya OpenAI di sini.
@@ -950,21 +913,6 @@ namespace LiveTranslation.Engine
             if (words.Length == 0) return false;
             var last = words[^1].TrimEnd('.', ',', '?', '!', '。', '、');
             return SemanticBoundaryWords.Contains(last);
-        }
-
-        private void TryDetectLangFromTrans(TranslationRecognitionResult result)
-        {
-            if (inputLang != "auto") return;
-            try
-            {
-                var ar = AutoDetectSourceLanguageResult.FromResult(result);
-                if (string.IsNullOrEmpty(ar?.Language)) return;
-                var norm = NormLang(ar.Language);
-                if (norm == detectedLang) return;
-                detectedLang = norm;
-                OnLanguageDetected?.Invoke(norm);
-            }
-            catch { }
         }
 
         private string GetTranslation(IReadOnlyDictionary<string, string> dict,
@@ -1219,49 +1167,19 @@ namespace LiveTranslation.Engine
             "en"  => "en-US",
             "ja"  => "ja-JP",
             "jp"  => "ja-JP",
-            "ko"  => "ko-KR",
-            "ms"  => "ms-MY",
-            "th"  => "th-TH",
-            "vi"  => "vi-VN",
-            "fil" => "fil-PH",
-            "km"  => "km-KH",
-            "my"  => "my-MM",
-            "lo"  => "lo-LA",
-            "ta"  => "ta-MY",
+            // [FUTURE-LANG] Bahasa lain di-comment sementara (hanya id/en/ja yang aktif).
+            // Un-comment baris terkait untuk mengaktifkan lagi (lihat NOTICE di TranslationDefaults.cs).
+            // "ko"  => "ko-KR",
+            // "ms"  => "ms-MY",
+            // "th"  => "th-TH",
+            // "vi"  => "vi-VN",
+            // "fil" => "fil-PH",
+            // "km"  => "km-KH",
+            // "my"  => "my-MM",
+            // "lo"  => "lo-LA",
+            // "ta"  => "ta-MY",
             _     => "en-US"
         };
-
-        private static string NormLang(string sdkLang) => sdkLang switch
-        {
-            "id-ID"  => "id",
-            "en-US"  => "en",
-            "ja-JP"  => "ja",
-            "ko-KR"  => "ko",
-            "ms-MY"  => "ms",
-            "th-TH"  => "th",
-            "vi-VN"  => "vi",
-            "fil-PH" => "fil",
-            "km-KH"  => "km",
-            "my-MM"  => "my",
-            "lo-LA"  => "lo",
-            "ta-MY"  => "ta",
-            _ => sdkLang.Contains('-') ? sdkLang.Split('-')[0] : sdkLang
-        };
-
-        private static string[] BuildAutoDetectLanguages(string selectedInputLang)
-        {
-            var slot3 = selectedInputLang switch
-            {
-                "en" or "ja" or "jp" or "auto" => "id-ID",
-                _ => ToSdkLang(selectedInputLang)
-            };
-
-            if (slot3 is "en-US" or "ja-JP")
-                slot3 = "id-ID";
-
-            var slot4 = slot3 == "id-ID" ? "ms-MY" : "id-ID";
-            return new[] { "en-US", "ja-JP", slot3, slot4 };
-        }
 
         public async Task SwitchInputAsync(string lang)
         {

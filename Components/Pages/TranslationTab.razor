@@ -247,10 +247,6 @@
     }
     .s-sel:disabled { opacity: 0.35; cursor: default; }
 
-    .detected-badge { font-size: 9px; color: #33aa77; letter-spacing: 0.03em; flex-shrink: 0; white-space: nowrap; }
-    html.teams-light .detected-badge { color: #228855; }
-    html.teams-contrast .detected-badge { color: #ffffff; }
-
     .s-pill {
         background: #14142a;
         color: #666688;
@@ -718,7 +714,6 @@
     private bool   _isSwitching = false;
     private bool   _engineIsRunning = false;
     private TranslationMode _engineMode = TranslationMode.SttOpenAI;
-    private string _detectedLang = "";
     private string _selectedInputLang = TranslationDefaults.DefaultInputLanguage;
     private string _selectedOutputLang = TranslationDefaults.DefaultOutputLanguage;
     private bool   _userScrolledUp = false;
@@ -730,10 +725,11 @@
     private string _selectedFontSize = "medium";
 
     // Language options shown in the settings bar.
-    // NOTICE: Untuk sementara, input/output dibatasi ke Bahasa Indonesia, English, dan Japanese saja.
+    // NOTICE [FUTURE-LANG]: Untuk sementara, input/output dibatasi ke Bahasa Indonesia, English, dan Japanese saja.
     // Bahasa lain (ko, ms, th, vi, fil, km, my, lo, ta) sengaja di-comment, BUKAN dihapus.
-    // Untuk mengaktifkannya kembali, hapus tanda "//" pada baris bahasa terkait di _inputOptions dan _outputOptions.
-    // Opsi "Auto detect" untuk input sudah dihapus; default input sekarang "id" (lihat TranslationDefaults).
+    // Untuk mengaktifkannya kembali, hapus tanda "//" pada baris bahasa terkait di _inputOptions dan _outputOptions,
+    // DAN di semua tempat bertanda [FUTURE-LANG] di backend (daftar lengkap: lihat NOTICE di Services/TranslationDefaults.cs).
+    // Opsi "Auto detect" untuk input sudah dihapus; default input/output diatur di TranslationDefaults.
     private static readonly (string code, string label)[] _inputOptions =
     {
         ("id",  "Bahasa Indonesia (Indonesian)"),
@@ -937,7 +933,6 @@
                 InvokeAsync(StateHasChanged);
             });
 
-            _hub.On<string>("LanguageDetected", OnLanguageDetectedHandler);
             _hub.On<string>("EngineError", OnEngineErrorHandler);
 
             await _hub.StartAsync();
@@ -1018,12 +1013,6 @@
         }
     }
 
-    private void OnLanguageDetectedHandler(string lang)
-    {
-        _detectedLang = lang;
-        InvokeAsync(StateHasChanged);
-    }
-
     private void OnEngineErrorHandler(string error)
     {
         _debugMsg = $"ENGINE: {error}";
@@ -1069,7 +1058,6 @@
         _selectedInputLang = lang;
         try
         {
-            _detectedLang = "";
             if (_hub is not null && _hub.State == HubConnectionState.Connected)
                 await _hub.SendAsync("SetInputLanguage", lang);
         }

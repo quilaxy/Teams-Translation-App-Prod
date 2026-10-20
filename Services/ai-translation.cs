@@ -309,9 +309,12 @@ namespace LiveTranslation.AI
 
         private static string LangName(string? code) => LangKey(code) switch
         {
-            "en" => "English",   "id" => "Indonesian", "ja" => "Japanese", "ko" => "Korean",
-            "ms" => "Malay",     "th" => "Thai",       "vi" => "Vietnamese", "fil" => "Filipino",
-            "km" => "Khmer",     "my" => "Burmese",    "lo" => "Lao",      "ta" => "Tamil",
+            "en" => "English",   "id" => "Indonesian", "ja" => "Japanese",
+            // [FUTURE-LANG] Bahasa lain di-comment sementara (hanya id/en/ja yang aktif).
+            // Un-comment baris terkait untuk mengaktifkan lagi (lihat NOTICE di TranslationDefaults.cs).
+            // "ko" => "Korean",
+            // "ms" => "Malay",     "th" => "Thai",       "vi" => "Vietnamese", "fil" => "Filipino",
+            // "km" => "Khmer",     "my" => "Burmese",    "lo" => "Lao",      "ta" => "Tamil",
             _ => "English"
         };
 
@@ -324,15 +327,17 @@ namespace LiveTranslation.AI
             "ja"  => casual
                 ? "Casual spoken Japanese (友達口調), natural and relaxed. Drop subjects/pronouns when clear."
                 : "Natural polite spoken Japanese (です・ます調) as a Japanese businessperson would say it: drop subjects/pronouns when clear, avoid 直訳調 and over-stiff keigo. Product/tech names stay in EN or katakana.",
-            "ms"  => "Natural formal Malaysian Malay (kami, anda, beliau); drop lah, kan, eh, lor.",
-            "th"  => "Natural polite spoken Thai (ครับ/ค่ะ) in Thai script, no romanization; omit pronouns where Thai would.",
-            "vi"  => "Natural professional spoken Vietnamese with correct diacritics, not textbook-stiff.",
-            "fil" => "Natural professional Filipino; EN code-switching is fine.",
-            "km"  => "Natural formal spoken Khmer in Khmer script.",
-            "my"  => "Natural formal spoken Burmese in Myanmar script.",
-            "lo"  => "Natural formal spoken Lao in Lao script.",
-            "ta"  => "Natural formal spoken Tamil (Malaysia/Singapore style) in Tamil script.",
-            "ko"  => "Natural polite spoken Korean (합니다/습니다) in Hangul only; drop subjects when clear.",
+            // [FUTURE-LANG] Bahasa lain di-comment sementara (hanya id/en/ja yang aktif).
+            // Un-comment baris terkait untuk mengaktifkan lagi (lihat NOTICE di TranslationDefaults.cs).
+            // "ms"  => "Natural formal Malaysian Malay (kami, anda, beliau); drop lah, kan, eh, lor.",
+            // "th"  => "Natural polite spoken Thai (ครับ/ค่ะ) in Thai script, no romanization; omit pronouns where Thai would.",
+            // "vi"  => "Natural professional spoken Vietnamese with correct diacritics, not textbook-stiff.",
+            // "fil" => "Natural professional Filipino; EN code-switching is fine.",
+            // "km"  => "Natural formal spoken Khmer in Khmer script.",
+            // "my"  => "Natural formal spoken Burmese in Myanmar script.",
+            // "lo"  => "Natural formal spoken Lao in Lao script.",
+            // "ta"  => "Natural formal spoken Tamil (Malaysia/Singapore style) in Tamil script.",
+            // "ko"  => "Natural polite spoken Korean (합니다/습니다) in Hangul only; drop subjects when clear.",
             _     => ""
         };
 
@@ -341,8 +346,9 @@ namespace LiveTranslation.AI
             var src = LangKey(sourceLang);
             var tgt = LangKey(targetLang);
 
+            // [FUTURE-LANG] Filler Korea di-comment sementara (lihat NOTICE di TranslationDefaults.cs).
             var fillers = src == "ja" ? "えー, あの"
-                        : src == "ko" ? "음, 어"
+                        // : src == "ko" ? "음, 어"
                         : "um, uh, eh";
 
             var sb = new StringBuilder(480);
@@ -361,7 +367,7 @@ namespace LiveTranslation.AI
                 sb.Append(" Convert katakana loanwords to their original term.");
 
             // Register informal Indonesia hanya relevan bila sumbernya Indonesia (atau belum diketahui).
-            if (src == "id" || src == "" || src == "auto")
+            if (src == "id" || src == "")
                 sb.Append(" Informal Indonesian (nah, gitu, kok, sih, dong): use natural register, keep the meaning.");
 
             if (tgt == "ja")

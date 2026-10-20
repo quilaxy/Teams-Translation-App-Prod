@@ -55,6 +55,10 @@ Query string yang didukung:
 - `outputLang` (default: `en`; saat ini hanya `id`, `en`, `ja`)
 - `popout=true` (mode popout)
 
+Catatan bahasa: saat ini hanya `id`, `en`, `ja` yang aktif (default input `id`, output `en`; auto detect sudah dihapus).
+Bahasa lain (ko, ms, th, vi, fil, km, my, lo, ta) di-comment, bukan dihapus, dan ditandai `[FUTURE-LANG]`.
+Untuk mengaktifkannya lagi: `grep -rn "FUTURE-LANG" --include=*.cs --include=*.razor .` lalu un-comment semua tempatnya.
+
 ## Integrasi bot / streaming audio
 1) **Start engine**
 ```
