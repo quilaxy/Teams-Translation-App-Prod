@@ -55,8 +55,8 @@ Query string yang didukung:
 - `outputLang` (default: `ja`; pilihan di UI saat ini: `id`, `en`, `ja`)
 - `popout=true` (mode popout)
 
-Catatan bahasa: pilihan di UI dibatasi ke `id`, `en`, `ja`, dan opsi Auto detect untuk input dinonaktifkan.
-Opsi tersebut serta bahasa lain (ko, ms, th, vi, fil, km, my, lo, ta) hanya di-comment di
+Catatan bahasa: input dan output harus dipilih eksplisit (fitur auto detect sudah dihapus permanen).
+Pilihan di UI dibatasi ke `id`, `en`, `ja`; bahasa lain (ko, ms, th, vi, fil, km, my, lo, ta) hanya di-comment di
 `Components/Pages/TranslationTab.razor` (`_inputOptions` / `_outputOptions`), tidak dihapus. Default diatur di `Services/TranslationDefaults.cs`.
 
 ## Integrasi bot / streaming audio

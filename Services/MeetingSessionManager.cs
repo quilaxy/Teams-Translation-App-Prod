@@ -146,10 +146,6 @@ namespace Teams_Translation_App.Services
             var sessionLogger = _loggerFactory.CreateLogger<MeetingSession>();
             var session = new MeetingSession(meetingId, engine, coordinator, sessionLogger);
 
-            engine.OnLanguageDetected += lang =>
-            {
-                _ = PublishMeetingEventSafeAsync(meetingId, "LanguageDetected", lang);
-            };
             engine.OnError += error =>
             {
                 _ = PublishMeetingEventSafeAsync(meetingId, "EngineError", error);

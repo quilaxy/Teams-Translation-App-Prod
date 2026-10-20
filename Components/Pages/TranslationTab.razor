@@ -247,10 +247,6 @@
     }
     .s-sel:disabled { opacity: 0.35; cursor: default; }
 
-    .detected-badge { font-size: 9px; color: #33aa77; letter-spacing: 0.03em; flex-shrink: 0; white-space: nowrap; }
-    html.teams-light .detected-badge { color: #228855; }
-    html.teams-contrast .detected-badge { color: #ffffff; }
-
     .s-pill {
         background: #14142a;
         color: #666688;
@@ -605,11 +601,6 @@
                             <option value="@option.code">@option.label</option>
                         }
                     </select>
-                    @* Badge ini hanya tampil bila input = "auto"; opsi Auto detect sedang di-comment (lihat _inputOptions). *@
-                    @if (_selectedInputLang == "auto" && !string.IsNullOrEmpty(_detectedLang))
-                    {
-                        <span class="detected-badge">(@_detectedLang.ToUpperInvariant())</span>
-                    }
                 </div>
                 <div class="s-row">
                     <span class="s-lbl">Output</span>
@@ -723,7 +714,6 @@
     private bool   _isSwitching = false;
     private bool   _engineIsRunning = false;
     private TranslationMode _engineMode = TranslationMode.SttOpenAI;
-    private string _detectedLang = "";
     private string _selectedInputLang = TranslationDefaults.DefaultInputLanguage;
     private string _selectedOutputLang = TranslationDefaults.DefaultOutputLanguage;
     private bool   _userScrolledUp = false;
@@ -736,13 +726,13 @@
 
     // Language options shown in the settings bar.
     // NOTICE: Untuk sementara pilihan bahasa di UI dibatasi ke Indonesia, English, dan Japanese.
-    //  - Opsi "Auto detect" (input) dan bahasa lain (ko, ms, th, vi, fil, km, my, lo, ta) sengaja
-    //    di-comment, BUKAN dihapus. Hapus tanda "//" pada baris terkait untuk mengaktifkannya lagi.
+    //  - Bahasa lain (ko, ms, th, vi, fil, km, my, lo, ta) sengaja di-comment, BUKAN dihapus.
+    //    Hapus tanda "//" pada baris terkait untuk mengaktifkannya lagi.
     //  - Kode backend (engine/koordinator) tidak diubah dan tetap mendukung bahasa-bahasa tersebut.
+    //  - Input harus selalu dipilih eksplisit; fitur auto detect sudah dihapus permanen.
     //  - Default input/output diatur di Services/TranslationDefaults.cs (input: id, output: ja).
     private static readonly (string code, string label)[] _inputOptions =
     {
-        // ("auto", "Auto detect"),
         ("id",  "Bahasa Indonesia (Indonesian)"),
         ("en",  "English"),
         ("ja",  "日本語 (Japanese)"),
@@ -944,7 +934,6 @@
                 InvokeAsync(StateHasChanged);
             });
 
-            _hub.On<string>("LanguageDetected", OnLanguageDetectedHandler);
             _hub.On<string>("EngineError", OnEngineErrorHandler);
 
             await _hub.StartAsync();
@@ -1025,12 +1014,6 @@
         }
     }
 
-    private void OnLanguageDetectedHandler(string lang)
-    {
-        _detectedLang = lang;
-        InvokeAsync(StateHasChanged);
-    }
-
     private void OnEngineErrorHandler(string error)
     {
         _debugMsg = $"ENGINE: {error}";
@@ -1076,7 +1059,6 @@
         _selectedInputLang = lang;
         try
         {
-            _detectedLang = "";
             if (_hub is not null && _hub.State == HubConnectionState.Connected)
                 await _hub.SendAsync("SetInputLanguage", lang);
         }
