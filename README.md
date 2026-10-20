@@ -51,8 +51,8 @@ Buka:
 
 Query string yang didukung:
 - `meetingId` (default: `default`)
-- `inputLang` (default: `auto`)
-- `outputLang` (default: `en`)
+- `inputLang` (default: `id`; saat ini hanya `id`, `en`, `ja`)
+- `outputLang` (default: `en`; saat ini hanya `id`, `en`, `ja`)
 - `popout=true` (mode popout)
 
 ## Integrasi bot / streaming audio
