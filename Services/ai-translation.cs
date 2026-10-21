@@ -361,7 +361,7 @@ namespace LiveTranslation.AI
                 sb.Append(" Convert katakana loanwords to their original term.");
 
             // Register informal Indonesia hanya relevan bila sumbernya Indonesia (atau belum diketahui).
-            if (src == "id" || src == "" || src == "auto")
+            if (src == "id" || src == "")
                 sb.Append(" Informal Indonesian (nah, gitu, kok, sih, dong): use natural register, keep the meaning.");
 
             if (tgt == "ja")

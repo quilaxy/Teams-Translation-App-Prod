@@ -288,8 +288,7 @@ namespace Teams_Translation_App.Services
 
                 if (recipients.Count == 0) return;
 
-                var fallbackLang = NormalizeLanguage(_engine.InputLang, DefaultInputLang);
-                var sourceLang = NormalizeLanguage(_engine.DetectedLang, fallbackLang);
+                var sourceLang = NormalizeLanguage(_engine.InputLang, DefaultInputLang);
                 var dispatchTasks = recipients
                     .Select(group => DispatchToLanguageGroupAsync(
                         sourceText,
@@ -602,9 +601,7 @@ namespace Teams_Translation_App.Services
         private int GetEpoch(string meetingId) => _commitEpochs.TryGetValue(meetingId, out var e) ? e : 0;
         private void BumpEpoch(string meetingId) => _commitEpochs.AddOrUpdate(meetingId, 1, (_, v) => v + 1);
 
-        private string CurrentSourceLang() => NormalizeLanguage(
-            _engine.DetectedLang,
-            NormalizeLanguage(_engine.InputLang, DefaultInputLang));
+        private string CurrentSourceLang() => NormalizeLanguage(_engine.InputLang, DefaultInputLang);
 
         private List<string> GetGroupConnections(string meetingId, string targetLang)
             => _preferences

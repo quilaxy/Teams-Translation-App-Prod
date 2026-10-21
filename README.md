@@ -51,9 +51,13 @@ Buka:
 
 Query string yang didukung:
 - `meetingId` (default: `default`)
-- `inputLang` (default: `auto`)
-- `outputLang` (default: `en`)
+- `inputLang` (default: `id`; pilihan di UI saat ini: `id`, `en`, `ja`)
+- `outputLang` (default: `ja`; pilihan di UI saat ini: `id`, `en`, `ja`)
 - `popout=true` (mode popout)
+
+Catatan bahasa: input dan output harus dipilih eksplisit (fitur auto detect sudah dihapus permanen).
+Pilihan di UI dibatasi ke `id`, `en`, `ja`; bahasa lain (ko, ms, th, vi, fil, km, my, lo, ta) hanya di-comment di
+`Components/Pages/TranslationTab.razor` (`_inputOptions` / `_outputOptions`), tidak dihapus. Default diatur di `Services/TranslationDefaults.cs`.
 
 ## Integrasi bot / streaming audio
 1) **Start engine**
